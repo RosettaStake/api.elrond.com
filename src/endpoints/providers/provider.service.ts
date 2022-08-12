@@ -9,13 +9,23 @@ import { NodesInfos } from "./entities/nodes.infos";
 import { DelegationData } from "./entities/delegation.data";
 import { KeybaseService } from "src/common/keybase/keybase.service";
 import { CacheInfo } from "src/utils/cache.info";
-import { AddressUtils, Constants, CachingService, ApiService } from "@elrondnetwork/erdnest";
+import {
+  AddressUtils,
+  Constants,
+  CachingService,
+  ApiService,
+  ElasticService,
+  ElasticQuery, ElasticSortOrder, ApiUtils, QueryConditionOptions, QueryType,
+} from "@elrondnetwork/erdnest";
+import {QueryPagination} from "../../common/entities/query.pagination";
+import {Delegator} from "./entities/delegator";
 
 @Injectable()
 export class ProviderService {
   private readonly logger: Logger;
 
   constructor(
+    private readonly elasticService: ElasticService,
     private readonly cachingService: CachingService,
     private readonly apiConfigService: ApiConfigService,
     private readonly vmQueryService: VmQueryService,
@@ -344,4 +354,26 @@ export class ProviderService {
 
     return null;
   }
+
+  async getDelegatorsList(address: string, queryPagination: QueryPagination): Promise<Delegator[]> {
+    return await this.cachingService.getOrSetCache(
+        'account:count',
+        async () => await this.getDelegatorsListRaw(address, queryPagination),
+        Constants.oneMinute()
+    );
+  }
+
+  async getDelegatorsListRaw(address: string, queryPagination: QueryPagination): Promise<Delegator[]> {
+    const elasticQuery = ElasticQuery.create()
+        .withPagination(queryPagination)
+        .withCondition(QueryConditionOptions.must, [QueryType.Match("contract", address)])
+        .withSort([{ name: 'balanceNum', order: ElasticSortOrder.descending }]);
+
+    const result = await this.elasticService.getList('delegators', 'address', elasticQuery);
+
+    const delegators: Delegator[] = result.map(item => ApiUtils.mergeObjects(new Delegator(), item));
+
+    return delegators;
+  }
+
 }

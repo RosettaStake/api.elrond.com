@@ -1,9 +1,10 @@
-import { Controller, Get, HttpException, HttpStatus, Param, Query } from "@nestjs/common";
+import {Controller, DefaultValuePipe, Get, HttpException, HttpStatus, Param, ParseIntPipe, Query} from "@nestjs/common";
 import { ApiNotFoundResponse, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
 import { ProviderService } from "./provider.service";
 import { Provider } from "./entities/provider";
 import { ProviderFilter } from "./entities/provider.filter";
 import { ParseAddressPipe } from "@elrondnetwork/erdnest";
+import {Delegator} from "./entities/delegator";
 
 @Controller()
 @ApiTags('providers')
@@ -26,6 +27,22 @@ export class ProviderController {
   @ApiNotFoundResponse({ description: 'Provider not found' })
   async getProvider(@Param('address', ParseAddressPipe) address: string): Promise<Provider> {
     const provider = await this.providerService.getProvider(address);
+    if (provider === undefined) {
+      throw new HttpException(`Provider '${address}' not found`, HttpStatus.NOT_FOUND);
+    }
+
+    return provider;
+  }
+
+  @Get('/providers/:address/delegators')
+  @ApiOperation({ summary: 'Provider\' delegators list', description: 'Returns provider\'s delegators list for a given address' })
+  @ApiOkResponse({ type: [Delegator] })
+  @ApiNotFoundResponse({ description: 'Provider not found' })
+  async getProviderDelegators(
+      @Query('from', new DefaultValuePipe(0), ParseIntPipe) from: number,
+                              @Query("size", new DefaultValuePipe(25), ParseIntPipe) size: number,
+                              @Param('address', ParseAddressPipe) address: string): Promise<Delegator[]> {
+    const provider = await this.providerService.getDelegatorsList(address, { from, size });
     if (provider === undefined) {
       throw new HttpException(`Provider '${address}' not found`, HttpStatus.NOT_FOUND);
     }
