@@ -369,6 +369,8 @@ export class ProviderService {
         .withCondition(QueryConditionOptions.must, [QueryType.Match("contract", address)])
         .withSort([{ name: 'activeStake', order: ElasticSortOrder.descending }]);
 
+    this.logger.debug("Getting delegator list");
+
     const result = await this.elasticService.getList('delegators', 'address', elasticQuery);
 
     this.logger.debug("Delegator list" + result);
