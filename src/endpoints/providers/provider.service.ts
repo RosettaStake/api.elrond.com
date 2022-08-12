@@ -367,6 +367,7 @@ export class ProviderService {
     const elasticQuery = ElasticQuery.create()
         .withPagination(queryPagination)
         .withCondition(QueryConditionOptions.should, QueryType.Must([
+            QueryType.Exists("address"),
             QueryType.Match("contract", address),
             QueryType.Range("activeStakeNum", new RangeGreaterThan(0)),
         ]))
