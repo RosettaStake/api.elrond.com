@@ -15,7 +15,7 @@ import {
   CachingService,
   ApiService,
   ElasticService,
-  ElasticQuery, ElasticSortOrder, ApiUtils, QueryConditionOptions, QueryType,
+  ElasticQuery, ElasticSortOrder, ApiUtils, QueryConditionOptions, QueryType, RangeGreaterThan,
 } from "@elrondnetwork/erdnest";
 import {QueryPagination} from "../../common/entities/query.pagination";
 import {Delegator} from "./entities/delegator";
@@ -366,7 +366,10 @@ export class ProviderService {
   async getDelegatorsListRaw(address: string, queryPagination: QueryPagination): Promise<Delegator[]> {
     const elasticQuery = ElasticQuery.create()
         .withPagination(queryPagination)
-        .withCondition(QueryConditionOptions.must, [QueryType.Match("contract", address)])
+        .withCondition(QueryConditionOptions.should, QueryType.Must([
+            QueryType.Match("contract", address),
+            QueryType.Range("activeStakeNum", new RangeGreaterThan(0)),
+        ]))
         .withSort([{ name: 'activeStakeNum', order: ElasticSortOrder.descending }]);
 
     this.logger.log("Getting delegator list");
