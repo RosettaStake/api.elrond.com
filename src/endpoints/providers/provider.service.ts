@@ -355,23 +355,23 @@ export class ProviderService {
     return null;
   }
 
-  async getDelegatorsList(address: string, queryPagination: QueryPagination): Promise<Delegator[]> {
+  async getDelegatorsList(address: string, queryPagination: QueryPagination, order: ElasticSortOrder): Promise<Delegator[]> {
     return await this.cachingService.getOrSetCache(
         `delegators:${address}:${queryPagination.from}:${queryPagination.size}`,
-        async () => await this.getDelegatorsListRaw(address, queryPagination),
+        async () => await this.getDelegatorsListRaw(address, queryPagination, order),
         Constants.oneMinute()
     );
   }
 
-  async getDelegatorsListRaw(address: string, queryPagination: QueryPagination): Promise<Delegator[]> {
+  async getDelegatorsListRaw(address: string, queryPagination: QueryPagination, order: ElasticSortOrder): Promise<Delegator[]> {
     const elasticQuery = ElasticQuery.create()
         .withPagination(queryPagination)
         .withCondition(QueryConditionOptions.should, QueryType.Must([
-            QueryType.Exists("address"),
             QueryType.Match("contract", address),
             QueryType.Range("activeStakeNum", new RangeGreaterThan(0)),
         ]))
-        .withSort([{ name: 'activeStakeNum', order: ElasticSortOrder.descending }]);
+        .withMustNotCondition(QueryType.Match("address.keyword", ""))
+        .withSort([{ name: 'activeStakeNum', order: order }]);
 
     this.logger.log("Getting delegator list");
 

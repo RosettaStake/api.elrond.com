@@ -3,7 +3,7 @@ import { ApiNotFoundResponse, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } f
 import { ProviderService } from "./provider.service";
 import { Provider } from "./entities/provider";
 import { ProviderFilter } from "./entities/provider.filter";
-import { ParseAddressPipe } from "@elrondnetwork/erdnest";
+import {ElasticSortOrder, ParseAddressPipe} from "@elrondnetwork/erdnest";
 import {Delegator} from "./entities/delegator";
 
 @Controller()
@@ -40,9 +40,10 @@ export class ProviderController {
   @ApiNotFoundResponse({ description: 'Provider not found' })
   async getProviderDelegators(
       @Query('from', new DefaultValuePipe(0), ParseIntPipe) from: number,
-                              @Query("size", new DefaultValuePipe(25), ParseIntPipe) size: number,
-                              @Param('address', ParseAddressPipe) address: string): Promise<Delegator[]> {
-    const provider = await this.providerService.getDelegatorsList(address, { from, size });
+      @Query("size", new DefaultValuePipe(25), ParseIntPipe) size: number,
+      @Query("order", new DefaultValuePipe('desc'), ParseIntPipe) order: ElasticSortOrder,
+      @Param('address', ParseAddressPipe) address: string): Promise<Delegator[]> {
+    const provider = await this.providerService.getDelegatorsList(address, { from, size }, order);
     if (provider === undefined) {
       throw new HttpException(`Provider '${address}' not found`, HttpStatus.NOT_FOUND);
     }
