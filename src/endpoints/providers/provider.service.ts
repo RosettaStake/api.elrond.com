@@ -378,4 +378,23 @@ export class ProviderService {
     return result.map(item => ApiUtils.mergeObjects(new Delegator(), item));
   }
 
+  async getDelegatorsCount(address: string): Promise<number> {
+    return await this.cachingService.getOrSetCache(
+        `delegators:count`,
+        async () => await this.getDelegatorsCountRaw(address),
+        Constants.oneMinute()
+    );
+  }
+
+  async getDelegatorsCountRaw(address: string): Promise<number> {
+    const elasticQuery = ElasticQuery.create()
+        .withCondition(QueryConditionOptions.should, QueryType.Must([
+          QueryType.Match("contract", address),
+          QueryType.Range("activeStakeNum", new RangeGreaterThan(0)),
+          QueryType.Wildcard("address", "*"),
+        ]));
+
+    return await this.elasticService.getCount('delegators', elasticQuery);
+  }
+
 }

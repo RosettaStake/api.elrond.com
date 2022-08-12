@@ -59,4 +59,12 @@ export class ProviderController {
 
     return provider;
   }
+
+
+  @Get("/providers/:address/delegators/count")
+  @ApiOperation({ summary: 'Total number of delegators', description: 'Returns total number of delegators of provider' })
+  @ApiOkResponse({ type: Number })
+  async getAccountsCount(@Param('address', ParseAddressPipe) address: string): Promise<number> {
+    return await this.providerService.getDelegatorsCount(address);
+  }
 }
