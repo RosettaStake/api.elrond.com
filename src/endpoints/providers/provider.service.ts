@@ -371,6 +371,8 @@ export class ProviderService {
 
     const result = await this.elasticService.getList('delegators', 'address', elasticQuery);
 
+    this.logger.debug("Delegator list" + result);
+
     const delegators: Delegator[] = result.map(item => ApiUtils.mergeObjects(new Delegator(), item));
 
     return delegators;
