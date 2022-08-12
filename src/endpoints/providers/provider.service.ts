@@ -367,13 +367,13 @@ export class ProviderService {
     const elasticQuery = ElasticQuery.create()
         .withPagination(queryPagination)
         .withCondition(QueryConditionOptions.must, [QueryType.Match("contract", address)])
-        .withSort([{ name: 'activeStake', order: ElasticSortOrder.descending }]);
+        .withSort([{ name: 'activeStakeNum', order: ElasticSortOrder.descending }]);
 
-    this.logger.debug("Getting delegator list");
+    this.logger.log("Getting delegator list");
 
     const result = await this.elasticService.getList('delegators', 'address', elasticQuery);
 
-    this.logger.debug("Delegator list" + result);
+    this.logger.log("Delegator list" + result);
 
     const delegators: Delegator[] = result.map(item => ApiUtils.mergeObjects(new Delegator(), item));
 
