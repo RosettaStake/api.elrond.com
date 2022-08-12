@@ -357,7 +357,7 @@ export class ProviderService {
 
   async getDelegatorsList(address: string, queryPagination: QueryPagination, order: ElasticSortOrder): Promise<Delegator[]> {
     return await this.cachingService.getOrSetCache(
-        `delegators:${address}:${queryPagination.from}:${queryPagination.size}:${order}`,
+        `delegators:${address}:${queryPagination.from}:${queryPagination.size}:${order.toString()}`,
         async () => await this.getDelegatorsListRaw(address, queryPagination, order),
         Constants.oneMinute()
     );
@@ -369,8 +369,8 @@ export class ProviderService {
         .withCondition(QueryConditionOptions.should, QueryType.Must([
             QueryType.Match("contract", address),
             QueryType.Range("activeStakeNum", new RangeGreaterThan(0)),
+            QueryType.Wildcard("address", "*"),
         ]))
-        .withMustNotCondition(QueryType.Match("address.keyword", ""))
         .withSort([{ name: 'activeStakeNum', order: order }]);
 
     const result = await this.elasticService.getList('delegators', 'address', elasticQuery);
