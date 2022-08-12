@@ -357,7 +357,7 @@ export class ProviderService {
 
   async getDelegatorsList(address: string, queryPagination: QueryPagination, order: ElasticSortOrder): Promise<Delegator[]> {
     return await this.cachingService.getOrSetCache(
-        `delegators:${address}:${queryPagination.from}:${queryPagination.size}`,
+        `delegators:${address}:${queryPagination.from}:${queryPagination.size}:${order}`,
         async () => await this.getDelegatorsListRaw(address, queryPagination, order),
         Constants.oneMinute()
     );
@@ -373,15 +373,9 @@ export class ProviderService {
         .withMustNotCondition(QueryType.Match("address.keyword", ""))
         .withSort([{ name: 'activeStakeNum', order: order }]);
 
-    this.logger.log("Getting delegator list");
-
     const result = await this.elasticService.getList('delegators', 'address', elasticQuery);
 
-    this.logger.log("Delegator list" + result);
-
-    const delegators: Delegator[] = result.map(item => ApiUtils.mergeObjects(new Delegator(), item));
-
-    return delegators;
+    return result.map(item => ApiUtils.mergeObjects(new Delegator(), item));
   }
 
 }
