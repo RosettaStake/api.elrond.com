@@ -357,7 +357,7 @@ export class ProviderService {
 
   async getDelegatorsList(address: string, queryPagination: QueryPagination): Promise<Delegator[]> {
     return await this.cachingService.getOrSetCache(
-        'account:count',
+        `delegators:${address}:${queryPagination.from}:${queryPagination.size}`,
         async () => await this.getDelegatorsListRaw(address, queryPagination),
         Constants.oneMinute()
     );
@@ -367,7 +367,7 @@ export class ProviderService {
     const elasticQuery = ElasticQuery.create()
         .withPagination(queryPagination)
         .withCondition(QueryConditionOptions.must, [QueryType.Match("contract", address)])
-        .withSort([{ name: 'balanceNum', order: ElasticSortOrder.descending }]);
+        .withSort([{ name: 'activeStake', order: ElasticSortOrder.descending }]);
 
     const result = await this.elasticService.getList('delegators', 'address', elasticQuery);
 

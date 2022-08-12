@@ -12,9 +12,6 @@ export class Delegator {
     @ApiProperty({ type: String, description: 'Account bech32 address', example: 'erd1qga7ze0l03chfgru0a32wxqf2226nzrxnyhzer9lmudqhjgy7ycqjjyknz' })
     address: string = '';
 
-    @ApiProperty(SwaggerUtils.amountPropertyOptions({ description: 'Account current balance' }))
-    balance: string = '';
-
     @ApiProperty(SwaggerUtils.amountPropertyOptions({ description: 'Delegator\' active stake' }))
     activeStake: string = '';
 
