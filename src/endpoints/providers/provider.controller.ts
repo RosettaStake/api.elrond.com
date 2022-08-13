@@ -51,8 +51,10 @@ export class ProviderController {
       @Query('from', new DefaultValuePipe(0), ParseIntPipe) from: number,
       @Query("size", new DefaultValuePipe(25), ParseIntPipe) size: number,
       @Query("order", new DefaultValuePipe('desc')) order: string,
+      @Query('stakeFrom', new DefaultValuePipe(0), ParseIntPipe) stakeFrom: number,
+      @Query('stakeTo', new DefaultValuePipe(0), ParseIntPipe) stakeTo: number,
       @Param('address', ParseAddressPipe) address: string): Promise<Delegator[]> {
-    const provider = await this.providerService.getDelegatorsList(address, { from, size }, order === 'desc' ? ElasticSortOrder.descending : ElasticSortOrder.ascending);
+    const provider = await this.providerService.getDelegatorsList(address, { from, size }, order === 'desc' ? ElasticSortOrder.descending : ElasticSortOrder.ascending, stakeFrom, stakeTo);
     if (provider === undefined) {
       throw new HttpException(`Provider '${address}' not found`, HttpStatus.NOT_FOUND);
     }
@@ -66,9 +68,9 @@ export class ProviderController {
   @ApiOkResponse({ type: Number })
   async getAccountsCount(
       @Param('address', ParseAddressPipe) address: string,
-      @Query('from', new DefaultValuePipe(0), ParseIntPipe) from: number,
-      @Query('to', new DefaultValuePipe(0), ParseIntPipe) to: number,
+      @Query('stakeFrom', new DefaultValuePipe(0), ParseIntPipe) stakeFrom: number,
+      @Query('stakeTo', new DefaultValuePipe(0), ParseIntPipe) stakeTo: number,
   ): Promise<number> {
-    return await this.providerService.getDelegatorsCount(address, from, to);
+    return await this.providerService.getDelegatorsCount(address, stakeFrom, stakeTo);
   }
 }

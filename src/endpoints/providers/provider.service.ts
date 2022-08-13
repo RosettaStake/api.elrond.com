@@ -361,22 +361,27 @@ export class ProviderService {
     return null;
   }
 
-  async getDelegatorsList(address: string, queryPagination: QueryPagination, order: ElasticSortOrder): Promise<Delegator[]> {
+  async getDelegatorsList(address: string, queryPagination: QueryPagination, order: ElasticSortOrder, stakeFrom: number, stakeTo: number): Promise<Delegator[]> {
     return await this.cachingService.getOrSetCache(
-        `delegators:${address}:${queryPagination.from}:${queryPagination.size}:${order.toString()}`,
-        async () => await this.getDelegatorsListRaw(address, queryPagination, order),
+        `delegators:${address}:${queryPagination.from}:${queryPagination.size}:${order.toString()}:${stakeFrom}:${stakeTo}`,
+        async () => await this.getDelegatorsListRaw(address, queryPagination, order, stakeFrom, stakeTo),
         Constants.oneMinute()
     );
   }
 
-  async getDelegatorsListRaw(address: string, queryPagination: QueryPagination, order: ElasticSortOrder): Promise<Delegator[]> {
+  async getDelegatorsListRaw(address: string, queryPagination: QueryPagination, order: ElasticSortOrder, stakeFrom: number, stakeTo: number): Promise<Delegator[]> {
+    const queries = [
+      QueryType.Match("contract", address),
+      QueryType.Range("activeStakeNum", new RangeGreaterThan(stakeFrom)),
+      QueryType.Wildcard("address", "*"),
+    ];
+
+    if (stakeTo > 0) {
+      queries.push(QueryType.Range("activeStakeNum", new RangeLowerThanOrEqual(stakeTo)));
+    }
     const elasticQuery = ElasticQuery.create()
         .withPagination(queryPagination)
-        .withCondition(QueryConditionOptions.should, QueryType.Must([
-            QueryType.Match("contract", address),
-            QueryType.Range("activeStakeNum", new RangeGreaterThan(0)),
-            QueryType.Wildcard("address", "*"),
-        ]))
+        .withCondition(QueryConditionOptions.should, QueryType.Must(queries))
         .withSort([{ name: 'activeStakeNum', order: order }]);
 
     const result = await this.elasticService.getList('delegators', 'address', elasticQuery);
@@ -384,29 +389,27 @@ export class ProviderService {
     return result.map(item => ApiUtils.mergeObjects(new Delegator(), item));
   }
 
-  async getDelegatorsCount(address: string, from: number, to: number): Promise<number> {
+  async getDelegatorsCount(address: string, stakeFrom: number, stakeTo: number): Promise<number> {
     return await this.cachingService.getOrSetCache(
-        `delegators:${address}:count:${from}:${to}`,
-        async () => await this.getDelegatorsCountRaw(address, from, to),
+        `delegators:${address}:count:${stakeFrom}:${stakeTo}`,
+        async () => await this.getDelegatorsCountRaw(address, stakeFrom, stakeTo),
         Constants.oneMinute()
     );
   }
 
-  async getDelegatorsCountRaw(address: string, from: number, to: number): Promise<number> {
-
+  async getDelegatorsCountRaw(address: string, stakeFrom: number, stakeTo: number): Promise<number> {
     const queries = [
         QueryType.Match("contract", address),
-        QueryType.Range("activeStakeNum", new RangeGreaterThan(from)),
+        QueryType.Range("activeStakeNum", new RangeGreaterThan(stakeFrom)),
         QueryType.Wildcard("address", "*"),
     ];
 
-    if (to > 0) {
-      queries.push(QueryType.Range("activeStakeNum", new RangeLowerThanOrEqual(to)));
+    if (stakeTo > 0) {
+      queries.push(QueryType.Range("activeStakeNum", new RangeLowerThanOrEqual(stakeTo)));
     }
 
     const elasticQuery = ElasticQuery.create()
         .withCondition(QueryConditionOptions.should, QueryType.Must(queries));
-
 
     return await this.elasticService.getCount('delegators', elasticQuery);
   }
