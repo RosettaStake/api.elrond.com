@@ -15,7 +15,13 @@ import {
   CachingService,
   ApiService,
   ElasticService,
-  ElasticQuery, ElasticSortOrder, ApiUtils, QueryConditionOptions, QueryType, RangeGreaterThan,
+  ElasticQuery,
+  ElasticSortOrder,
+  ApiUtils,
+  QueryConditionOptions,
+  QueryType,
+  RangeGreaterThan,
+  RangeLowerThanOrEqual,
 } from "@elrondnetwork/erdnest";
 import {QueryPagination} from "../../common/entities/query.pagination";
 import {Delegator} from "./entities/delegator";
@@ -378,21 +384,29 @@ export class ProviderService {
     return result.map(item => ApiUtils.mergeObjects(new Delegator(), item));
   }
 
-  async getDelegatorsCount(address: string): Promise<number> {
+  async getDelegatorsCount(address: string, from: number, to: number): Promise<number> {
     return await this.cachingService.getOrSetCache(
-        `delegators:count`,
-        async () => await this.getDelegatorsCountRaw(address),
+        `delegators:count:${from}:${to}`,
+        async () => await this.getDelegatorsCountRaw(address, from, to),
         Constants.oneMinute()
     );
   }
 
-  async getDelegatorsCountRaw(address: string): Promise<number> {
+  async getDelegatorsCountRaw(address: string, from: number, to: number): Promise<number> {
+
+    const queries = [
+        QueryType.Match("contract", address),
+        QueryType.Range("activeStakeNum", new RangeGreaterThan(from)),
+        QueryType.Wildcard("address", "*"),
+    ];
+
+    if (to > 0) {
+      queries.push(QueryType.Range("activeStakeNum", new RangeLowerThanOrEqual(to)));
+    }
+
     const elasticQuery = ElasticQuery.create()
-        .withCondition(QueryConditionOptions.should, QueryType.Must([
-          QueryType.Match("contract", address),
-          QueryType.Range("activeStakeNum", new RangeGreaterThan(0)),
-          QueryType.Wildcard("address", "*"),
-        ]));
+        .withCondition(QueryConditionOptions.should, QueryType.Must(queries));
+
 
     return await this.elasticService.getCount('delegators', elasticQuery);
   }
