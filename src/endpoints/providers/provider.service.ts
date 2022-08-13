@@ -386,7 +386,7 @@ export class ProviderService {
 
   async getDelegatorsCount(address: string, from: number, to: number): Promise<number> {
     return await this.cachingService.getOrSetCache(
-        `delegators:count:${from}:${to}`,
+        `delegators:${address}:count:${from}:${to}`,
         async () => await this.getDelegatorsCountRaw(address, from, to),
         Constants.oneMinute()
     );
