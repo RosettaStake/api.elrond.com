@@ -9,10 +9,7 @@ import { KeybaseService } from "src/common/keybase/keybase.service";
 import { CacheInfo } from "src/utils/cache.info";
 import { ProviderFilter } from "./entities/provider.filter";
 import { Provider } from "./entities/provider";
-import { AddressUtils, Constants, CachingService, ApiService } from "@multiversx/sdk-nestjs";
-import { OriginLogger } from "@multiversx/sdk-nestjs";
-import {
-  AddressUtils,
+import { AddressUtils,
   Constants,
   CachingService,
   ApiService,
@@ -23,8 +20,8 @@ import {
   QueryConditionOptions,
   QueryType,
   RangeGreaterThan,
-  RangeLowerThanOrEqual,
-} from "@elrondnetwork/erdnest";
+  RangeLowerThanOrEqual, } from "@multiversx/sdk-nestjs";
+import { OriginLogger } from "@multiversx/sdk-nestjs";
 import {QueryPagination} from "../../common/entities/query.pagination";
 import {Delegator} from "./entities/delegator";
 
