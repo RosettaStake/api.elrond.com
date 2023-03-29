@@ -1,27 +1,28 @@
-import { PerformanceProfiler, CachingService } from "@elrondnetwork/erdnest";
-import { forwardRef, Inject, Injectable, Logger } from "@nestjs/common";
-import { ApiConfigService } from "src/common/api-config/api.config.service";
+import { OriginLogger } from "@multiversx/sdk-nestjs";
+import { PerformanceProfiler, CachingService } from "@multiversx/sdk-nestjs";
+import { forwardRef, Inject, Injectable } from "@nestjs/common";
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { LogMetricsEvent } from "src/common/entities/log.metrics.event";
 import { GatewayComponentRequest } from "src/common/gateway/entities/gateway.component.request";
 import { GatewayService } from "src/common/gateway/gateway.service";
-import { ApiMetricsService } from "src/common/metrics/api.metrics.service";
 import { ProtocolService } from "src/common/protocol/protocol.service";
+import { MetricsEvents } from "src/utils/metrics-events.constants";
+import { SettingsService } from "src/common/settings/settings.service";
 
 @Injectable()
 export class VmQueryService {
-  private readonly logger: Logger;
+  private readonly logger = new OriginLogger(VmQueryService.name);
 
   constructor(
     @Inject(forwardRef(() => CachingService))
     private readonly cachingService: CachingService,
     private readonly gatewayService: GatewayService,
     private readonly protocolService: ProtocolService,
-    private readonly apiConfigService: ApiConfigService,
-    private readonly metricsService: ApiMetricsService,
-  ) {
-    this.logger = new Logger(VmQueryService.name);
-  }
+    private readonly eventEmitter: EventEmitter2,
+    private readonly settingsService: SettingsService,
+  ) { }
 
-  private async computeTtls(): Promise<{ localTtl: number, remoteTtl: number }> {
+  private async computeTtls(): Promise<{ localTtl: number, remoteTtl: number; }> {
     const secondsRemainingUntilNextRound = await this.protocolService.getSecondsRemainingUntilNextRound();
 
     // no need to store value remotely just to evict it one second later
@@ -110,8 +111,14 @@ export class VmQueryService {
     } finally {
       profiler.stop();
 
-      if (this.apiConfigService.getUseVmQueryTracingFlag()) {
-        this.metricsService.setVmQuery(contract, func, profiler.duration);
+      const useVmQueryTracingFlag = await this.settingsService.getUseVmQueryTracingFlag();
+      if (useVmQueryTracingFlag) {
+        const metricsEvent = new LogMetricsEvent();
+        metricsEvent.args = [contract, func, profiler.duration];
+        this.eventEmitter.emit(
+          MetricsEvents.SetVmQuery,
+          metricsEvent
+        );
       }
     }
   }

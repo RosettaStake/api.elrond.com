@@ -1,6 +1,7 @@
+import { Constants } from '@multiversx/sdk-nestjs';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { DatabaseConnectionOptions } from '../persistence/database/entities/connection.options';
+import { DatabaseConnectionOptions } from '../persistence/entities/connection.options';
 
 @Injectable()
 export class ApiConfigService {
@@ -19,10 +20,49 @@ export class ApiConfigService {
     return apiUrls;
   }
 
+  getSelfUrl(): string {
+    const selfUrl = this.configService.get<string>('urls.self');
+    if (!selfUrl) {
+      throw new Error('No self url present');
+    }
+
+    return selfUrl;
+  }
+
+  isGuestCachingFeatureActive(): boolean {
+    return this.configService.get<boolean>('features.guestCaching.enabled') ?? false;
+  }
+
+  getGuestCachingHitsThreshold(): number {
+    return this.configService.get<number>('features.guestCaching.hitsThreshold') ?? 100;
+  }
+
+  getGuestCachingTtl(): number {
+    return this.configService.get<number>('features.guestCaching.ttl') ?? 12;
+  }
+
+  getVerifierUrl(): string {
+    const verifierUrl = this.configService.get<string>('urls.verifier');
+    if (!verifierUrl) {
+      throw new Error('No verifier url present');
+    }
+
+    return verifierUrl;
+  }
+
   getGatewayUrl(): string {
     const gatewayUrls = this.configService.get<string[]>('urls.gateway');
     if (!gatewayUrls) {
       throw new Error('No gateway urls present');
+    }
+
+    return gatewayUrls[Math.floor(Math.random() * gatewayUrls.length)];
+  }
+
+  getLightGatewayUrl(): string | undefined {
+    const gatewayUrls = this.configService.get<string[]>('urls.lightGateway');
+    if (!gatewayUrls) {
+      return undefined;
     }
 
     return gatewayUrls[Math.floor(Math.random() * gatewayUrls.length)];
@@ -57,6 +97,10 @@ export class ApiConfigService {
     }
 
     return url;
+  }
+
+  getMaiarIdUrl(): string | undefined {
+    return this.configService.get<string>('urls.maiarId');
   }
 
   getEsdtContractAddress(): string {
@@ -202,15 +246,25 @@ export class ApiConfigService {
 
   getProvidersUrl(): string {
     const providerUrl = this.configService.get<string>('urls.providers');
-    if (!providerUrl) {
-      throw new Error('No providers url present');
+    if (providerUrl) {
+      return providerUrl;
     }
 
-    return providerUrl;
+    const delegationUrl = this.configService.get<string>('urls.delegation');
+    if (delegationUrl) {
+      return delegationUrl + '/providers';
+    }
+
+    throw new Error('No providers url present');
   }
 
-  getDataUrl(): string | undefined {
-    return this.configService.get<string>('urls.dataUrl');
+  getDelegationUrl(): string {
+    const delegationUrl = this.configService.get<string>('urls.delegation');
+    if (!delegationUrl) {
+      throw new Error('No delegation url present');
+    }
+
+    return delegationUrl;
   }
 
   getTempUrl(): string {
@@ -248,6 +302,14 @@ export class ApiConfigService {
     return this.configService.get<number>('cron.transactionCompletedMaxLookBehind') ?? 100;
   }
 
+  getIsTransactionBatchCronActive(): boolean {
+    return this.configService.get<boolean>('cron.transactionBatch') ?? false;
+  }
+
+  getTransactionBatchMaxLookBehind(): number {
+    return this.configService.get<number>('cron.transactionBatchMaxLookBehind') ?? 100;
+  }
+
   getIsCacheWarmerCronActive(): boolean {
     const isCronActive = this.configService.get<boolean>('cron.cacheWarmer');
     if (isCronActive === undefined) {
@@ -255,6 +317,10 @@ export class ApiConfigService {
     }
 
     return isCronActive;
+  }
+
+  getIsApiStatusCheckerActive(): boolean {
+    return this.configService.get<boolean>('cron.statusChecker') ?? false;
   }
 
   getIsElasticUpdaterCronActive(): boolean {
@@ -323,6 +389,10 @@ export class ApiConfigService {
     return this.configService.get<boolean>('flags.indexer-v3') ?? false;
   }
 
+  isGraphQlActive(): boolean {
+    return this.configService.get<boolean>('api.graphql') ?? false;
+  }
+
   getIsPublicApiActive(): boolean {
     const isApiActive = this.configService.get<boolean>('api.public');
     if (isApiActive === undefined) {
@@ -342,7 +412,7 @@ export class ApiConfigService {
   }
 
   getIsAuthActive(): boolean {
-    return this.configService.get<boolean>('api.auth') ?? false;
+    return this.configService.get<boolean>('features.auth.enabled') ?? this.configService.get<boolean>('api.auth') ?? false;
   }
 
   getDatabaseType(): string {
@@ -494,15 +564,6 @@ export class ApiConfigService {
     return metaChainShardId;
   }
 
-  getUseLegacyElastic(): boolean {
-    const useLegacyElastic = this.configService.get<boolean>('useLegacyElastic');
-    if (useLegacyElastic === undefined) {
-      return false;
-    }
-
-    return useLegacyElastic;
-  }
-
   getRateLimiterSecret(): string | undefined {
     return this.configService.get<string>('rateLimiterSecret');
   }
@@ -548,7 +609,7 @@ export class ApiConfigService {
   }
 
   getSecurityAdmins(): string[] {
-    const admins = this.configService.get<string[]>('security.admins');
+    const admins = this.configService.get<string[]>('features.auth.admins') ?? this.configService.get<string[]>('security.admins');
     if (admins === undefined) {
       throw new Error('No security admins value present');
     }
@@ -557,16 +618,12 @@ export class ApiConfigService {
   }
 
   getJwtSecret(): string {
-    const jwtSecret = this.configService.get<string>('security.jwtSecret');
+    const jwtSecret = this.configService.get<string>('features.auth.jwtSecret') ?? this.configService.get<string>('security.jwtSecret');
     if (!jwtSecret) {
       throw new Error('No jwtSecret present');
     }
 
     return jwtSecret;
-  }
-
-  getAccessAddress(): string {
-    return this.configService.get<string>('security.accessAddress') ?? '';
   }
 
   getMockKeybases(): boolean | undefined {
@@ -598,14 +655,46 @@ export class ApiConfigService {
     return this.configService.get<number>('nftProcess.maxRetries') ?? 3;
   }
 
-  getMaiarExchangeUrl(): string | undefined {
+  private isExchangeEnabledInternal(): boolean {
+    return this.configService.get<boolean>('features.exchange.enabled') ?? false;
+  }
+
+  private getExchangeServiceUrlLegacy(): string | undefined {
     return this.configService.get<string>('transaction-action.mex.microServiceUrl') ?? this.configService.get<string>('plugins.transaction-action.mex.microServiceUrl');
   }
 
-  getMaiarExchangeUrlMandatory(): string {
-    const microServiceUrl = this.getMaiarExchangeUrl();
+  isExchangeEnabled(): boolean {
+    const isExchangeEnabled = this.isExchangeEnabledInternal();
+    if (isExchangeEnabled) {
+      return true;
+    }
+
+    const legacyUrl = this.getExchangeServiceUrlLegacy();
+    if (legacyUrl) {
+      return true;
+    }
+
+    return false;
+  }
+
+  getExchangeServiceUrl(): string | undefined {
+    const isExchangeEnabled = this.isExchangeEnabledInternal();
+    if (isExchangeEnabled) {
+      return this.configService.get<string>('features.exchange.serviceUrl');
+    }
+
+    const legacyUrl = this.getExchangeServiceUrlLegacy();
+    if (legacyUrl) {
+      return legacyUrl;
+    }
+
+    return undefined;
+  }
+
+  getExchangeServiceUrlMandatory(): string {
+    const microServiceUrl = this.getExchangeServiceUrl();
     if (!microServiceUrl) {
-      throw new Error('No transaction-action.mex.microServiceUrl present');
+      throw new Error('No exchange service url present');
     }
 
     return microServiceUrl;
@@ -634,5 +723,90 @@ export class ApiConfigService {
 
   getNftExtendedAttributesNsfwThreshold(): number {
     return this.configService.get<number>('features.nftExtendedAttributes.nsfwThreshold') ?? 0.85;
+  }
+
+  getIndexerSlaveConnections(): DatabaseConnectionOptions[] {
+    const slaves = this.configService.get<DatabaseConnectionOptions[]>('indexer.slaves');
+    if (!slaves) {
+      return [];
+    }
+    return slaves;
+  }
+
+  private getIndexerHost(): string {
+    const indexerHost = this.configService.get<string>('indexer.host');
+    if (!indexerHost) {
+      throw new Error('No indexer.host present');
+    }
+    return indexerHost;
+  }
+
+  private getIndexerPort(): number {
+    const indexerPort = this.configService.get<number>('indexer.port');
+    if (!indexerPort) {
+      throw new Error('No indexer.port present');
+    }
+    return indexerPort;
+  }
+
+  private getIndexerUsername(): string | undefined {
+    const indexerUsername = this.configService.get<string>('indexer.username');
+    return indexerUsername;
+  }
+
+  private getIndexerPassword(): string | undefined {
+    const indexerPassword = this.configService.get<string>('indexer.password');
+    return indexerPassword;
+  }
+
+  private getIndexerName(): string {
+    const indexerName = this.configService.get<string>('indexer.database');
+    if (!indexerName) {
+      throw new Error('No indexer.database present');
+    }
+    return indexerName;
+  }
+
+  getIndexerConnection(): any {
+    return {
+      host: this.getIndexerHost(),
+      port: this.getIndexerPort(),
+      username: this.getIndexerUsername(),
+      password: this.getIndexerPassword(),
+      database: this.getIndexerName(),
+    };
+  }
+
+  getIndexerMaxPagination(): number {
+    return this.configService.get<number>('indexer.maxPagination') ?? 10000;
+  }
+
+  isNodeSyncProgressEnabled(): boolean {
+    return this.configService.get<boolean>('features.nodeSyncProgress.enabled') ?? false;
+  }
+
+  isUpdateCollectionExtraDetailsEnabled(): boolean {
+    return this.configService.get<boolean>('features.updateCollectionExtraDetails.enabled') ?? false;
+  }
+
+  isMarketplaceFeatureEnabled(): boolean {
+    return this.configService.get<boolean>('features.marketplace.enabled') ?? false;
+  }
+
+  getMarketplaceServiceUrl(): string {
+    const serviceUrl = this.configService.get<string>('features.marketplace.serviceUrl');
+    if (!serviceUrl) {
+      throw new Error('No marketplace service url present');
+    }
+
+    return serviceUrl;
+  }
+
+  getNativeAuthAcceptedOrigins(): string[] {
+    return this.configService.get<string[]>('features.auth.acceptedOrigins') ?? [];
+  }
+
+  getNativeAuthMaxExpirySeconds(): number {
+    return this.configService.get<number>('features.auth.maxExpirySeconds') ?? Constants.oneDay();
   }
 }

@@ -1,3 +1,5 @@
+import { SortOrder } from "src/common/entities/sort.order";
+import { SortCollectionNfts } from "src/endpoints/collections/entities/sort.collection.nfts";
 import { NftType } from "./nft.type";
 
 export class NftFilter {
@@ -17,6 +19,13 @@ export class NftFilter {
   includeFlagged?: boolean;
   before?: number;
   after?: number;
+  nonceBefore?: number;
+  nonceAfter?: number;
   isWhitelistedStorage?: boolean;
   isNsfw?: boolean;
+  traits?: Record<string, string>;
+  excludeMetaESDT?: boolean;
+
+  sort?: SortCollectionNfts | string;
+  order?: SortOrder;
 }

@@ -9,6 +9,7 @@ import { MexModule } from "../mex/mex.module";
 import { TokenModule } from "../tokens/token.module";
 import { NftExtendedAttributesService } from "./nft.extendedattributes.service";
 import { NftService } from "./nft.service";
+import { LockedAssetModule } from "../../common/locked-asset/locked-asset.module";
 
 @Module({
   imports: [
@@ -17,8 +18,9 @@ import { NftService } from "./nft.service";
     forwardRef(() => CollectionModule),
     forwardRef(() => PluginModule),
     forwardRef(() => NftMetadataModule),
-    forwardRef(() => MexModule),
+    forwardRef(() => MexModule.forRoot()),
     forwardRef(() => AssetsModule),
+    forwardRef(() => LockedAssetModule),
     NftMediaModule,
   ],
   providers: [

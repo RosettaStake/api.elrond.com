@@ -1,4 +1,6 @@
-import { Constants } from "@elrondnetwork/erdnest";
+import { Constants } from "@multiversx/sdk-nestjs";
+import { QueryPagination } from "src/common/entities/query.pagination";
+import { BlockFilter } from "src/endpoints/blocks/entities/block.filter";
 
 export class CacheInfo {
   key: string = "";
@@ -6,6 +8,16 @@ export class CacheInfo {
 
   static About: CacheInfo = {
     key: 'about',
+    ttl: Constants.oneMinute() * 10,
+  };
+
+  static LastProcessedTimestamp: CacheInfo = {
+    key: 'lastProcessedTimestamp',
+    ttl: Constants.oneWeek() * 2,
+  };
+
+  static TokenMarketCap: CacheInfo = {
+    key: 'tokenMarketCap',
     ttl: Constants.oneMinute() * 10,
   };
 
@@ -123,8 +135,20 @@ export class CacheInfo {
     };
   }
 
+  static TransactionBatchShardNonce(shard: number): CacheInfo {
+    return {
+      key: `batchShardNonce:${shard}`,
+      ttl: Number.MAX_SAFE_INTEGER,
+    };
+  }
+
   static TokenAssets: CacheInfo = {
     key: 'tokenAssets',
+    ttl: Constants.oneDay(),
+  };
+
+  static CollectionRanks: CacheInfo = {
+    key: 'collectionRanks',
     ttl: Constants.oneDay(),
   };
 
@@ -167,7 +191,17 @@ export class CacheInfo {
   static EsdtAssets(identifier: string): CacheInfo {
     return {
       key: `esdt:assets:${identifier}`,
-      ttl: Constants.oneDay(),
+      ttl: Constants.oneHour(),
+    };
+  }
+
+  static HistoricalPrice(identifier: string, date: Date): CacheInfo {
+    const isCurrentDate = date.toISODateString() === new Date().toISODateString();
+    const ttl = isCurrentDate ? Constants.oneMinute() * 5 : Constants.oneWeek();
+
+    return {
+      key: `historical-price:${identifier}:${date.toISODateString()}`,
+      ttl,
     };
   }
 
@@ -195,6 +229,13 @@ export class CacheInfo {
   static TokenLockedAccounts(identifier: string): CacheInfo {
     return {
       key: `tokenLockedAccounts:${identifier}`,
+      ttl: Constants.oneHour(),
+    };
+  }
+
+  static TokenSupply(identifier: string): CacheInfo {
+    return {
+      key: `tokenSupply:${identifier}`,
       ttl: Constants.oneHour(),
     };
   }
@@ -261,6 +302,11 @@ export class CacheInfo {
     ttl: Constants.oneMinute() * 10,
   };
 
+  static StakingProxies: CacheInfo = {
+    key: "mexStakingProxies",
+    ttl: Constants.oneMinute() * 10,
+  };
+
   static MexTokensIndexed: CacheInfo = {
     key: "mexTokensIndexed",
     ttl: Constants.oneMinute() * 10,
@@ -289,4 +335,190 @@ export class CacheInfo {
     key: "delegationLegacy",
     ttl: Constants.oneMinute() * 10,
   };
+
+  static ExtendedAttributesActivationNonce: CacheInfo = {
+    key: "extendedAttributesActivationNonce",
+    ttl: Constants.oneDay(),
+  };
+
+  static InitEpoch: CacheInfo = {
+    key: "initEpoch",
+    ttl: Constants.oneDay(),
+  };
+
+  static LockedTokenIDs: CacheInfo = {
+    key: "lockedTokenIDs",
+    ttl: Constants.oneHour(),
+  };
+
+  static CurrentEpoch: CacheInfo = {
+    key: "currentEpoch",
+    ttl: Constants.oneMinute(),
+  };
+
+  static TransactionBatch(sender: string, batchId: string): CacheInfo {
+    return {
+      key: `transactionbatch:${sender}:${batchId}`,
+      ttl: Constants.oneMinute() * 20,
+    };
+  }
+
+  static PendingTransaction(hash: string): CacheInfo {
+    return {
+      key: `pendingtransaction:${hash}`,
+      ttl: Constants.oneMinute() * 15,
+    };
+  }
+
+  static AccountsCount: CacheInfo = {
+    key: "account:count",
+    ttl: Constants.oneMinute(),
+  };
+
+  static AccountUsername(address: string): CacheInfo {
+    return {
+      key: `account:${address}:username`,
+      ttl: Constants.oneWeek(),
+    };
+  }
+
+  static AccountDeployedAt(address: string): CacheInfo {
+    return {
+      key: `accountDeployedAt:${address}`,
+      ttl: Constants.oneDay(),
+    };
+  }
+
+  static AccountDeployTxHash(address: string): CacheInfo {
+    return {
+      key: `accountDeployTxHash:${address}`,
+      ttl: Constants.oneDay(),
+    };
+  }
+
+  static AccountIsVerified(address: string): CacheInfo {
+    return {
+      key: `accountIsVerified:${address}`,
+      ttl: Constants.oneMinute() * 10,
+    };
+  }
+
+  static Accounts(queryPagination: QueryPagination): CacheInfo {
+    return {
+      key: `accounts:${queryPagination.from}:${queryPagination.size}`,
+      ttl: Constants.oneMinute(),
+    };
+  }
+
+  static BlocksCount(filter: BlockFilter): CacheInfo {
+    return {
+      key: `blocks:count:${JSON.stringify(filter)}`,
+      ttl: Constants.oneMinute(),
+    };
+  }
+
+  static Delegation: CacheInfo = {
+    key: "delegation",
+    ttl: Constants.oneMinute() * 10,
+  };
+
+  static Constants: CacheInfo = {
+    key: 'constants',
+    ttl: Constants.oneDay(),
+  };
+
+  static NftOwnersCount(identifier: string): CacheInfo {
+    return {
+      key: `nftOwnerCount:${identifier}`,
+      ttl: Constants.oneMinute(),
+    };
+  }
+
+  static NftTags(pagination: QueryPagination): CacheInfo {
+    return {
+      key: `nftTags:${pagination.from}:${pagination.size}`,
+      ttl: Constants.oneHour(),
+    };
+  }
+
+  static NftTagCount: CacheInfo = {
+    key: 'nftTagsCount',
+    ttl: Constants.oneHour(),
+  };
+
+  static NodeVersions: CacheInfo = {
+    key: 'nodeVersions',
+    ttl: Constants.oneMinute(),
+  };
+
+  static DelegationProviders: CacheInfo = {
+    key: 'delegationProviders',
+    ttl: Constants.oneMinute(),
+  };
+
+  static DelegationProvider(address: string): CacheInfo {
+    return {
+      key: `delegationProvider:${address}`,
+      ttl: Constants.oneMinute(),
+    };
+  }
+
+  static GlobalStake: CacheInfo = {
+    key: 'stake',
+    ttl: Constants.oneMinute() * 10,
+  };
+
+  static FullWaitingList: CacheInfo = {
+    key: 'waiting-list',
+    ttl: Constants.oneMinute() * 5,
+  };
+
+  static PendingUploadAsset(identifier: string): CacheInfo {
+    return {
+      key: `pendingUploadAsset:${identifier}`,
+      ttl: Constants.oneHour() * 12,
+    };
+  }
+
+  static PendingMediaGet(identifier: string): CacheInfo {
+    return {
+      key: `pendingMediaGet:${identifier}`,
+      ttl: Constants.oneHour() * 12,
+    };
+  }
+
+  static PendingMetadataGet(identifier: string): CacheInfo {
+    return {
+      key: `pendingMetadataGet:${identifier}`,
+      ttl: Constants.oneHour() * 12,
+    };
+  }
+
+  static PendingGenerateThumbnail(identifier: string): CacheInfo {
+    return {
+      key: `pendingGenerateThumbnail:${identifier}`,
+      ttl: Constants.oneHour() * 12,
+    };
+  }
+
+  static Username(address: string): CacheInfo {
+    return {
+      key: `username:${address}`,
+      ttl: Constants.oneHour(),
+    };
+  }
+
+  static ContractUpgrades(address: string): CacheInfo {
+    return {
+      key: `contractUpgrades:${address}`,
+      ttl: Constants.oneHour(),
+    };
+  }
+
+  static Setting(name: string): CacheInfo {
+    return {
+      key: `api:settings:${name}`,
+      ttl: Constants.oneHour(),
+    };
+  }
 }

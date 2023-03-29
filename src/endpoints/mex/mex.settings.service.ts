@@ -1,4 +1,4 @@
-import { Constants, CachingService } from "@elrondnetwork/erdnest";
+import { Constants, CachingService } from "@multiversx/sdk-nestjs";
 import { Injectable } from "@nestjs/common";
 import { gql } from "graphql-request";
 import { CacheInfo } from "src/utils/cache.info";
@@ -6,6 +6,7 @@ import { GraphQlService } from "src/common/graphql/graphql.service";
 import { TransactionMetadata } from "../transactions/transaction-action/entities/transaction.metadata";
 import { TransactionMetadataTransfer } from "../transactions/transaction-action/entities/transaction.metadata.transfer";
 import { MexSettings } from "./entities/mex.settings";
+import { ApiConfigService } from "src/common/api-config/api.config.service";
 
 @Injectable()
 export class MexSettingsService {
@@ -14,6 +15,7 @@ export class MexSettingsService {
   constructor(
     private readonly cachingService: CachingService,
     private readonly graphQlService: GraphQlService,
+    private readonly apiConfigService: ApiConfigService,
   ) { }
 
   getTransfers(metadata: TransactionMetadata): TransactionMetadataTransfer[] | undefined {
@@ -41,6 +43,10 @@ export class MexSettingsService {
   }
 
   async getSettings(): Promise<MexSettings | null> {
+    if (!this.apiConfigService.isExchangeEnabled()) {
+      return null;
+    }
+
     const settings = await this.cachingService.getOrSetCache(
       CacheInfo.MexSettings.key,
       async () => await this.getSettingsRaw(),
@@ -72,6 +78,7 @@ export class MexSettingsService {
     return new Set<string>([
       settings.distributionContract,
       settings.lockedAssetContract,
+      settings.routerFactoryContract,
       ...settings.farmContracts,
       ...settings.pairContracts,
       ...settings.wrapContracts,
@@ -104,15 +111,25 @@ export class MexSettingsService {
       }
       proxy {
         address
-        lockedAssetToken {
+        lockedAssetTokens {
           collection
           __typename
         }
       }
       farms {
-        state
-        address
-      }
+        ... on FarmModelV1_2 {
+          state
+          address
+        }
+        ... on FarmModelV1_3 {
+          state
+          address
+        }
+        ... on FarmModelV2 {
+          state
+          address
+        }
+     }
       wrappingInfo {
         address
         shard
@@ -130,36 +147,18 @@ export class MexSettingsService {
       stakingProxies {
         address
       }
+      factory {
+        address
+      }
     }
     `;
 
-    const result = await this.graphQlService.getData(query, variables);
-    if (!result) {
+    const response = await this.graphQlService.getData(query, variables);
+    if (!response) {
       return null;
     }
 
-    const settings = new MexSettings();
-    settings.farmContracts = [
-      ...result.farms.filter((x: any) => ['Active', 'Migrate'].includes(x.state)).map((x: any) => x.address),
-      ...result.stakingFarms.filter((x: any) => x.state === 'Active').map((x: any) => x.address),
-      ...result.stakingProxies.map((x: any) => x.address),
-      result.proxy.address,
-    ];
-    settings.pairContracts = [
-      ...result.pairs.filter((x: any) => x.state === 'Active').map((x: any) => x.address),
-      result.proxy.address,
-    ];
-    settings.wrapContracts = result.wrappingInfo.map((x: any) => x.address);
-    settings.distributionContract = result.distribution.address;
-    settings.lockedAssetContract = result.lockedAssetFactory.address;
-    settings.lockedAssetIdentifier = result.proxy.lockedAssetToken.collection;
-
-    const mexEgldPairs = result.pairs.filter((x: any) => x.firstToken.name === 'WrappedEGLD' && x.secondToken.name === 'MEX');
-    if (mexEgldPairs.length > 0) {
-      settings.wegldId = mexEgldPairs[0].firstToken.identifier;
-      settings.mexId = mexEgldPairs[0].secondToken.identifier;
-    }
-
+    const settings = MexSettings.fromQueryResponse(response);
     return settings;
   }
 

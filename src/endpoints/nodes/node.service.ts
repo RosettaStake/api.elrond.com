@@ -18,7 +18,9 @@ import { CacheInfo } from "src/utils/cache.info";
 import { Stake } from "../stake/entities/stake";
 import { GatewayComponentRequest } from "src/common/gateway/entities/gateway.component.request";
 import { Auction } from "src/common/gateway/entities/auction";
-import { AddressUtils, Constants, CachingService } from "@elrondnetwork/erdnest";
+import { AddressUtils, Constants, CachingService } from "@multiversx/sdk-nestjs";
+import { NodeSort } from "./entities/node.sort";
+import { ProtocolService } from "src/common/protocol/protocol.service";
 
 @Injectable()
 export class NodeService {
@@ -33,7 +35,9 @@ export class NodeService {
     private readonly stakeService: StakeService,
     @Inject(forwardRef(() => ProviderService))
     private readonly providerService: ProviderService,
+    @Inject(forwardRef(() => BlockService))
     private readonly blockService: BlockService,
+    private readonly protocolService: ProtocolService,
   ) { }
 
   private getIssues(node: Node, version: string | undefined): string[] {
@@ -62,9 +66,9 @@ export class NodeService {
 
   async getNodeVersions(): Promise<NodeVersions> {
     return await this.cachingService.getOrSetCache(
-      'nodeVersions',
+      CacheInfo.NodeVersions.key,
       async () => await this.getNodeVersionsRaw(),
-      Constants.oneMinute()
+      CacheInfo.NodeVersions.ttl
     );
   }
 
@@ -161,17 +165,29 @@ export class NodeService {
         return false;
       }
 
-      if (query.sort && !(query.sort in node)) {
-        return false;
+      if (query.fullHistory !== undefined) {
+        if (query.fullHistory === true && !node.fullHistory) {
+          return false;
+        }
+
+        if (query.fullHistory === false && node.fullHistory === true) {
+          return false;
+        }
       }
 
       return true;
     });
 
-    if (query.sort) {
+    const sort = query.sort;
+    if (sort) {
       filteredNodes.sort((a: any, b: any) => {
         let asort = a[query.sort ?? ''];
         let bsort = b[query.sort ?? ''];
+
+        if (sort === NodeSort.locked) {
+          asort = Number(asort);
+          bsort = Number(bsort);
+        }
 
         if (asort && typeof asort === 'string') {
           asort = asort.toLowerCase();
@@ -243,7 +259,7 @@ export class NodeService {
   }
 
   private async getNodesOwnerAndProvider(nodes: Node[]) {
-    const blses = nodes.filter(node => node.type === NodeType.validator).map(node => node.bls);
+    const blses = nodes.map(node => node.bls);
     const epoch = await this.blockService.getCurrentEpoch();
     const owners = await this.getOwners(blses, epoch);
 
@@ -309,7 +325,7 @@ export class NodeService {
     await this.getNodesStakeDetails(nodes);
 
     if (this.apiConfigService.isStakingV4Enabled()) {
-      const auctions = await this.gatewayService.getAuctions();
+      const auctions = await this.gatewayService.getValidatorAuctions();
       this.processAuctions(nodes, auctions);
     }
 
@@ -449,20 +465,29 @@ export class NodeService {
 
   async getHeartbeat(): Promise<Node[]> {
     const [
-      { heartbeats },
+      heartbeats,
       { statistics },
-      { config },
+      config,
     ] = await Promise.all([
-      this.gatewayService.get('node/heartbeatstatus', GatewayComponentRequest.nodeHeartbeat),
+      this.gatewayService.getNodeHeartbeatStatus(),
       this.gatewayService.get('validator/statistics', GatewayComponentRequest.validatorStatistics),
-      this.gatewayService.get('network/config', GatewayComponentRequest.networkConfig),
+      this.gatewayService.getNetworkConfig(),
     ]);
 
     const nodes: Node[] = [];
 
-    const blses =
-      [...Object.keys(statistics), ...heartbeats.map((item: any) => item.publicKey)].distinct();
+    const blses = [...Object.keys(statistics), ...heartbeats.map((item: any) => item.publicKey)].distinct();
 
+    const nodesPerShardDict: Record<string, number> = {};
+    if (this.apiConfigService.isNodeSyncProgressEnabled()) {
+      const shardIds = await this.protocolService.getShardIds();
+
+      for (const shardId of shardIds) {
+        const shardTrieStatistics = await this.gatewayService.getTrieStatistics(shardId);
+
+        nodesPerShardDict[shardId] = shardTrieStatistics.accounts_snapshot_num_nodes;
+      }
+    }
 
     for (const bls of blses) {
       const heartbeat = heartbeats.find((beat: any) => beat.publicKey === bls) || {};
@@ -489,6 +514,7 @@ export class NodeService {
         validatorStatus,
         nonce,
         numInstances: instances,
+        numTrieNodesReceived,
       } = item;
 
       let {
@@ -509,9 +535,15 @@ export class NodeService {
       if (validatorStatus === 'new') {
         nodeType = NodeType.validator;
         nodeStatus = NodeStatus.new;
+      } else if (validatorStatus === 'jailed') {
+        nodeType = NodeType.validator;
+        nodeStatus = NodeStatus.jailed;
       } else if (validatorStatus && validatorStatus.includes('leaving')) {
         nodeType = NodeType.validator;
         nodeStatus = NodeStatus.leaving;
+      } else if (validatorStatus === 'inactive') {
+        nodeType = NodeType.validator;
+        nodeStatus = NodeStatus.inactive;
       } else if (peerType === 'observer') {
         nodeType = NodeType.observer;
         nodeStatus = undefined;
@@ -520,7 +552,7 @@ export class NodeService {
         nodeStatus = peerType ? peerType : validatorStatus;
       }
 
-      const node: Node = {
+      const node: Node = new Node({
         bls,
         name,
         version: version ? (version.includes('-rc') ? version.split('-').slice(0, 2).join('-').split('/')[0] : version.split('-')[0].split('/')[0]) : '',
@@ -528,6 +560,7 @@ export class NodeService {
         rating: parseFloat(parseFloat(rating).toFixed(2)),
         tempRating: parseFloat(parseFloat(tempRating).toFixed(2)),
         ratingModifier: ratingModifier ? ratingModifier : 0,
+        fullHistory: item.peerSubType === 1 ? true : undefined,
         shard,
         type: nodeType,
         status: nodeStatus,
@@ -550,10 +583,22 @@ export class NodeService {
         auctionPosition: undefined,
         auctionTopUp: undefined,
         auctionSelected: undefined,
-      };
+      });
 
       if (['queued', 'jailed'].includes(peerType)) {
         node.shard = undefined;
+      }
+
+      if (node.online === undefined) {
+        node.online = false;
+      }
+
+      if (this.apiConfigService.isNodeSyncProgressEnabled() && numTrieNodesReceived > 0) {
+        node.syncProgress = numTrieNodesReceived / nodesPerShardDict[shard];
+
+        if (node.syncProgress > 1) {
+          node.syncProgress = 1;
+        }
       }
 
       node.issues = this.getIssues(node, config.erd_latest_tag_software_version);

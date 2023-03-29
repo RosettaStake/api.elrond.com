@@ -1,4 +1,4 @@
-import { ParseBlockHashPipe } from "@elrondnetwork/erdnest";
+import { ParseBlockHashPipe } from "@multiversx/sdk-nestjs";
 import { Controller, Get, HttpException, HttpStatus, Param } from "@nestjs/common";
 import { ApiNotFoundResponse, ApiOkResponse, ApiOperation, ApiTags } from "@nestjs/swagger";
 import { MiniBlockDetailed } from "./entities/mini.block.detailed";
@@ -10,7 +10,7 @@ export class MiniBlockController {
   constructor(private readonly miniBlockService: MiniBlockService) { }
 
   @Get("/miniblocks/:miniBlockHash")
-  @ApiOperation({ summary: 'Miniblock details', description: 'Returns miniblock details for a given identifier.' })
+  @ApiOperation({ summary: 'Miniblock details', description: 'Returns miniblock details for a given miniBlockHash.' })
   @ApiOkResponse({ type: MiniBlockDetailed })
   @ApiNotFoundResponse({ description: 'Miniblock not found' })
   async getBlock(@Param('miniBlockHash', ParseBlockHashPipe) miniBlockHash: string): Promise<MiniBlockDetailed> {

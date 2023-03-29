@@ -11,37 +11,43 @@ import { NetworkConstants } from './entities/constants';
 import { Economics } from './entities/economics';
 import { NetworkConfig } from './entities/network.config';
 import { StakeService } from '../stake/stake.service';
-import { DataApiService } from 'src/common/external/data.api.service';
 import { GatewayService } from 'src/common/gateway/gateway.service';
-import { DataQuoteType } from 'src/common/external/entities/data.quote.type';
 import { CacheInfo } from 'src/utils/cache.info';
-import { GatewayComponentRequest } from 'src/common/gateway/entities/gateway.component.request';
-import { Constants, NumberUtils, CachingService, ApiService } from '@elrondnetwork/erdnest';
+import { NumberUtils, CachingService, ApiService } from '@multiversx/sdk-nestjs';
 import { About } from './entities/about';
+import { PluginService } from 'src/common/plugins/plugin.service';
+import { SmartContractResultService } from '../sc-results/scresult.service';
+import { TokenService } from '../tokens/token.service';
 
 @Injectable()
 export class NetworkService {
   constructor(
+    @Inject(forwardRef(() => TokenService))
+    private readonly tokenService: TokenService,
     private readonly apiConfigService: ApiConfigService,
     private readonly cachingService: CachingService,
     private readonly gatewayService: GatewayService,
     private readonly vmQueryService: VmQueryService,
+    @Inject(forwardRef(() => BlockService))
     private readonly blockService: BlockService,
     @Inject(forwardRef(() => AccountService))
     private readonly accountService: AccountService,
     @Inject(forwardRef(() => TransactionService))
     private readonly transactionService: TransactionService,
-    private readonly dataApiService: DataApiService,
+    @Inject(forwardRef(() => PluginService))
+    private readonly pluginsService: PluginService,
     private readonly apiService: ApiService,
     @Inject(forwardRef(() => StakeService))
     private readonly stakeService: StakeService,
+    private readonly pluginService: PluginService,
+    private readonly smartContractResultService: SmartContractResultService
   ) { }
 
   async getConstants(): Promise<NetworkConstants> {
     return await this.cachingService.getOrSetCache(
-      'constants',
+      CacheInfo.Constants.key,
       async () => await this.getConstantsRaw(),
-      Constants.oneDay()
+      CacheInfo.Constants.ttl
     );
   }
 
@@ -74,16 +80,17 @@ export class NetworkService {
   }
 
   async getNetworkConfig(): Promise<NetworkConfig> {
+    const metaChainShard = this.apiConfigService.getMetaChainShardId();
     const [
       {
-        config: { erd_round_duration, erd_rounds_per_epoch },
+        erd_round_duration, erd_rounds_per_epoch,
       },
       {
-        status: { erd_rounds_passed_in_current_epoch },
+        erd_rounds_passed_in_current_epoch,
       },
     ] = await Promise.all([
-      this.gatewayService.get('network/config', GatewayComponentRequest.networkConfig),
-      this.gatewayService.get('network/status/4294967295', GatewayComponentRequest.networkStatus),
+      this.gatewayService.getNetworkConfig(),
+      this.gatewayService.getNetworkStatus(metaChainShard),
     ]);
 
     const roundsPassed = erd_rounds_passed_in_current_epoch;
@@ -94,15 +101,18 @@ export class NetworkService {
   }
 
   async getEconomics(): Promise<Economics> {
-    return await this.cachingService.getOrSetCache(
+    const economics = await this.cachingService.getOrSetCache(
       CacheInfo.Economics.key,
       async () => await this.getEconomicsRaw(),
       CacheInfo.Economics.ttl,
     );
+
+    // we do a deep copy here because we don't want to modify the cached object
+    return new Economics({ ...economics });
   }
 
   async getMinimumAuctionTopUp(): Promise<string | undefined> {
-    const auctions = await this.gatewayService.getAuctions();
+    const auctions = await this.gatewayService.getValidatorAuctions();
 
     if (auctions.length === 0) {
       return undefined;
@@ -122,27 +132,25 @@ export class NetworkService {
   }
 
   async getEconomicsRaw(): Promise<Economics> {
-    const locked = 1330000;
     const [
       {
         account: { balance },
       },
       {
-        metrics: { erd_total_supply },
+        erd_total_supply,
       },
       [, totalWaitingStakeBase64],
       priceValue,
+      tokenMarketCap,
     ] = await Promise.all([
-      this.gatewayService.get(
-        `address/${this.apiConfigService.getAuctionContractAddress()}`,
-        GatewayComponentRequest.addressDetails
-      ),
-      this.gatewayService.get('network/economics', GatewayComponentRequest.networkEconomics),
+      this.gatewayService.getAddressDetails(`${this.apiConfigService.getAuctionContractAddress()}`),
+      this.gatewayService.getNetworkEconomics(),
       this.vmQueryService.vmQuery(
         this.apiConfigService.getDelegationContractAddress(),
         'getTotalStakeByType',
       ),
-      this.dataApiService.getQuotesHistoricalLatest(DataQuoteType.price),
+      this.pluginsService.getEgldPrice(),
+      this.tokenService.getTokenMarketCapRaw(),
     ]);
 
 
@@ -156,6 +164,14 @@ export class NetworkService {
 
     const staked = parseInt((BigInt(balance) + totalWaitingStake).toString().slice(0, -18));
     const totalSupply = parseInt(erd_total_supply.slice(0, -18));
+
+    let locked: number = 0;
+    if (this.apiConfigService.getNetwork() === 'mainnet') {
+      const account = await this.accountService.getAccountRaw('erd195fe57d7fm5h33585sc7wl8trqhrmy85z3dg6f6mqd0724ymljxq3zjemc');
+      if (account) {
+        locked = Math.round(NumberUtils.denominate(BigInt(account.balance), 18));
+      }
+    }
 
     const circulatingSupply = totalSupply - locked;
     const price = priceValue ? parseFloat(priceValue.toFixed(2)) : undefined;
@@ -172,6 +188,7 @@ export class NetworkService {
       apr: aprInfo.apr ? aprInfo.apr.toRounded(6) : 0,
       topUpApr: aprInfo.topUpApr ? aprInfo.topUpApr.toRounded(6) : 0,
       baseApr: aprInfo.baseApr ? aprInfo.baseApr.toRounded(6) : 0,
+      tokenMarketCap: tokenMarketCap ? Math.round(tokenMarketCap) : undefined,
     });
 
     if (this.apiConfigService.isStakingV4Enabled()) {
@@ -186,34 +203,33 @@ export class NetworkService {
 
     const [
       {
-        config: {
-          erd_num_shards_without_meta: shards,
-          erd_round_duration: refreshRate,
-        },
+        erd_num_shards_without_meta: shards,
+        erd_round_duration: refreshRate,
       },
       {
-        status: {
-          erd_epoch_number: epoch,
-          erd_rounds_passed_in_current_epoch: roundsPassed,
-          erd_rounds_per_epoch: roundsPerEpoch,
-        },
+        erd_epoch_number: epoch,
+        erd_rounds_passed_in_current_epoch: roundsPassed,
+        erd_rounds_per_epoch: roundsPerEpoch,
       },
       blocks,
       accounts,
       transactions,
+      scResults,
     ] = await Promise.all([
-      this.gatewayService.get('network/config', GatewayComponentRequest.networkConfig),
-      this.gatewayService.get(`network/status/${metaChainShard}`, GatewayComponentRequest.networkStatus),
+      this.gatewayService.getNetworkConfig(),
+      this.gatewayService.getNetworkStatus(metaChainShard),
       this.blockService.getBlocksCount(new BlockFilter()),
       this.accountService.getAccountsCount(),
       this.transactionService.getTransactionCount(new TransactionFilter()),
+      this.smartContractResultService.getScResultsCount(),
     ]);
 
     return {
       shards,
       blocks,
       accounts,
-      transactions,
+      transactions: transactions + scResults,
+      scResults,
       refreshRate,
       epoch,
       roundsPassed: roundsPassed % roundsPerEpoch,
@@ -227,10 +243,7 @@ export class NetworkService {
     const stake = await this.stakeService.getGlobalStake();
     const {
       account: { balance: stakedBalance },
-    } = await this.gatewayService.get(
-      `address/${this.apiConfigService.getAuctionContractAddress()}`,
-      GatewayComponentRequest.addressDetails
-    );
+    } = await this.gatewayService.getAddressDetails(`${this.apiConfigService.getAuctionContractAddress()}`);
     let [activeStake] = await this.vmQueryService.vmQuery(
       this.apiConfigService.getDelegationContractAddress(),
       'getTotalActiveStake',
@@ -284,25 +297,44 @@ export class NetworkService {
     );
   }
 
-  getAboutRaw(): About {
+  async getAboutRaw(): Promise<About> {
     const appVersion = require('child_process')
-      .execSync('git rev-parse --short HEAD')
+      .execSync('git rev-parse HEAD')
       .toString().trim();
 
     let pluginsVersion = require('child_process')
-      .execSync('git rev-parse --short HEAD', { cwd: 'src/plugins' })
+      .execSync('git rev-parse HEAD', { cwd: 'src/plugins' })
+      .toString().trim();
+
+    let apiVersion = require('child_process')
+      .execSync('git tag --points-at HEAD')
       .toString().trim();
 
     if (pluginsVersion === appVersion) {
       pluginsVersion = undefined;
     }
 
-    return new About({
+    if (!apiVersion) {
+      apiVersion = require('child_process')
+        .execSync('git describe --tags --abbrev=0')
+        .toString().trim();
+
+      if (apiVersion) {
+        apiVersion = apiVersion + '-next';
+      }
+    }
+
+    const about = new About({
       appVersion,
       pluginsVersion,
       network: this.apiConfigService.getNetwork(),
       cluster: this.apiConfigService.getCluster(),
+      version: apiVersion,
     });
+
+    await this.pluginService.processAbout(about);
+
+    return about;
   }
 
   numberDecode(encoded: string): string {

@@ -1,14 +1,16 @@
-import { forwardRef, Inject, Injectable, Logger } from "@nestjs/common";
+import { forwardRef, Inject, Injectable } from "@nestjs/common";
 import { ApiConfigService } from "src/common/api-config/api.config.service";
 import { VmQueryService } from "src/endpoints/vm.query/vm.query.service";
-import { Provider } from "src/endpoints/providers/entities/provider";
 import { ProviderConfig } from "./entities/provider.config";
 import { NodeService } from "../nodes/node.service";
-import { ProviderFilter } from "src/endpoints/providers/entities/provider.filter";
 import { NodesInfos } from "./entities/nodes.infos";
 import { DelegationData } from "./entities/delegation.data";
 import { KeybaseService } from "src/common/keybase/keybase.service";
 import { CacheInfo } from "src/utils/cache.info";
+import { ProviderFilter } from "./entities/provider.filter";
+import { Provider } from "./entities/provider";
+import { AddressUtils, Constants, CachingService, ApiService } from "@multiversx/sdk-nestjs";
+import { OriginLogger } from "@multiversx/sdk-nestjs";
 import {
   AddressUtils,
   Constants,
@@ -28,7 +30,7 @@ import {Delegator} from "./entities/delegator";
 
 @Injectable()
 export class ProviderService {
-  private readonly logger: Logger;
+  private readonly logger = new OriginLogger(ProviderService.name);
 
   constructor(
     private readonly elasticService: ElasticService,
@@ -40,15 +42,30 @@ export class ProviderService {
     private readonly apiService: ApiService,
     @Inject(forwardRef(() => KeybaseService))
     private readonly keybaseService: KeybaseService,
-  ) {
-    this.logger = new Logger(ProviderService.name);
-  }
+  ) { }
 
   async getProvider(address: string): Promise<Provider | undefined> {
     const query = new ProviderFilter();
     const providers = await this.getProviders(query);
+    const provider: Provider | undefined = providers.find(x => x.provider === address);
 
-    return providers.find(x => x.provider === address);
+    if (provider) {
+      const delegationData: DelegationData | undefined = await this.getDelegationProviderByAddress(provider.provider);
+      if (!delegationData) {
+        return undefined;
+      }
+
+      const modifiedProvider = { ...provider };
+      modifiedProvider.automaticActivation = delegationData.automaticActivation;
+      modifiedProvider.initialOwnerFunds = delegationData.initialOwnerFunds;
+      modifiedProvider.checkCapOnRedelegate = delegationData.checkCapOnRedelegate;
+      modifiedProvider.totalUnStaked = delegationData.totalUnStaked;
+      modifiedProvider.createdNonce = delegationData.createdNonce;
+
+      return modifiedProvider;
+    }
+
+    return provider;
   }
 
   private getNodesInfosForProvider(providerNodes: any[]): NodesInfos {
@@ -109,6 +126,10 @@ export class ProviderService {
         if (delegationData.featured) {
           element.featured = delegationData.featured;
         }
+
+        if (delegationData.owner) {
+          element.owner = delegationData.owner;
+        }
       }
 
       // Add Nodes details for provider
@@ -118,9 +139,6 @@ export class ProviderService {
       element.stake = nodesInfos.stake;
       element.topUp = nodesInfos.topUp;
       element.locked = nodesInfos.locked;
-
-      // @ts-ignore
-      delete element.owner;
     });
 
     providers.sort((a, b) => {
@@ -139,21 +157,23 @@ export class ProviderService {
     return /^[\w]*$/g.test(identity ?? '');
   }
 
-  async getProviders(query: ProviderFilter): Promise<Provider[]> {
-    let providers = await this.getProvidersWithStakeInformation();
-
-    if (query.identity) {
-      providers = providers.filter((provider) => provider.identity === query.identity);
-    }
-
-    return providers;
+  async getProviders(filter: ProviderFilter): Promise<Provider[]> {
+    return await this.getFilteredProviders(filter);
   }
 
   async getDelegationProviders(): Promise<DelegationData[]> {
     return await this.cachingService.getOrSetCache(
-      'delegationProviders',
+      CacheInfo.DelegationProviders.key,
       async () => await this.getDelegationProvidersRaw(),
-      Constants.oneMinute()
+      CacheInfo.DelegationProviders.ttl
+    );
+  }
+
+  async getDelegationProviderByAddress(address: string): Promise<DelegationData | undefined> {
+    return await this.cachingService.getOrSetCache(
+      CacheInfo.DelegationProvider(address).key,
+      async () => await this.getDelegationProviderByAddressRaw(address),
+      CacheInfo.DelegationProvider(address).ttl
     );
   }
 
@@ -168,6 +188,17 @@ export class ProviderService {
     }
   }
 
+  async getDelegationProviderByAddressRaw(address: string): Promise<DelegationData | undefined> {
+    try {
+      const { data } = await this.apiService.get(`${this.apiConfigService.getProvidersUrl()}/${address}`);
+      return data;
+    } catch (error) {
+      this.logger.error('Error when getting delegation provider');
+      this.logger.error(error);
+      return undefined;
+    }
+  }
+
   async getAllProviders(): Promise<Provider[]> {
     return await this.cachingService.getOrSetCache(
       CacheInfo.Providers.key,
@@ -177,36 +208,42 @@ export class ProviderService {
   }
 
   async getAllProvidersRaw(): Promise<Provider[]> {
-    const providers = await this.getProviderAddresses();
+    const providerAddresses = await this.getProviderAddresses();
 
-    const [configs, numUsers, cumulatedRewards] = await Promise.all([
+    const [configs, metadatas, numUsers, cumulatedRewards] = await Promise.all([
       this.cachingService.batchProcess(
-        providers,
+        providerAddresses,
         address => `providerConfig:${address}`,
         async address => await this.getProviderConfig(address),
         Constants.oneMinute() * 15,
       ),
       this.cachingService.batchProcess(
-        providers,
+        providerAddresses,
+        address => `providerMetadata:${address}`,
+        async address => await this.getProviderMetadata(address),
+        Constants.oneMinute() * 15,
+      ),
+      this.cachingService.batchProcess(
+        providerAddresses,
         address => `providerNumUsers:${address}`,
         async address => await this.getNumUsers(address),
         Constants.oneHour(),
       ),
       this.cachingService.batchProcess(
-        providers,
+        providerAddresses,
         address => `providerCumulatedRewards:${address}`,
         async address => await this.getCumulatedRewards(address),
         Constants.oneHour()
       ),
     ]);
 
-    const providersRaw: Provider[] = providers.map((provider, index) => {
+    const providersRaw: Provider[] = providerAddresses.map((provider, index) => {
       return {
         provider,
         ...configs[index],
         numUsers: numUsers[index] ?? 0,
         cumulatedRewards: cumulatedRewards[index] ?? '0',
-        identity: undefined,
+        identity: metadatas[index]?.identity ?? undefined,
         numNodes: 0,
         stake: '0',
         topUp: '0',
@@ -218,13 +255,13 @@ export class ProviderService {
     const providerKeybases = await this.keybaseService.getCachedNodesAndProvidersKeybases();
 
     if (providerKeybases) {
-      for (const providerAddress of providers) {
+      for (const providerAddress of providerAddresses) {
         const providerInfo = providerKeybases[providerAddress];
 
-        if (providerInfo && providerInfo.confirmed) {
+        if (!providerInfo || !providerInfo.confirmed) {
           const found = providersRaw.find(x => x.provider === providerAddress);
           if (found) {
-            found.identity = providerInfo.identity;
+            found.identity = undefined;
           }
         }
       }
@@ -359,6 +396,20 @@ export class ProviderService {
     }
 
     return null;
+  }
+
+  async getFilteredProviders(filter: ProviderFilter): Promise<Provider[]> {
+    let providers = await this.getProvidersWithStakeInformation();
+
+    if (filter.identity) {
+      providers = providers.filter((provider) => provider.identity === filter.identity);
+    }
+
+    if (filter.providers) {
+      providers = providers.filter(x => x.provider && filter.providers?.includes(x.provider));
+    }
+
+    return providers;
   }
 
   async getDelegatorsList(address: string, queryPagination: QueryPagination, order: ElasticSortOrder, stakeFrom: number, stakeTo: number): Promise<Delegator[]> {

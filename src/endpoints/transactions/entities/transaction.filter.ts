@@ -1,4 +1,4 @@
-import { QueryConditionOptions } from "@elrondnetwork/erdnest";
+import { QueryConditionOptions } from "@multiversx/sdk-nestjs";
 import { SortOrder } from "src/common/entities/sort.order";
 import { TransactionStatus } from "./transaction.status";
 import { TransactionType } from "./transaction.type";
@@ -10,7 +10,8 @@ export class TransactionFilter {
 
   address?: string;
   sender?: string;
-  receiver?: string;
+  senders?: string[] = [];
+  receivers?: string[] = [];
   token?: string;
   function?: string;
   senderShard?: number;
@@ -18,11 +19,11 @@ export class TransactionFilter {
   miniBlockHash?: string;
   hashes?: string[];
   status?: TransactionStatus;
-  search?: string;
   before?: number;
   after?: number;
   condition?: QueryConditionOptions;
   order?: SortOrder;
   type?: TransactionType;
   tokens?: string[];
+  senderOrReceiver?: string;
 }

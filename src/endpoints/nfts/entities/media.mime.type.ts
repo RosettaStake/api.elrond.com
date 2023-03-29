@@ -1,8 +1,11 @@
 export enum MediaMimeTypeEnum {
   png = 'image/png',
   jpeg = 'image/jpeg',
+  webp = 'image/webp',
   jpg = 'image/jpg',
   gif = 'image/gif',
+  svg = 'image/svg',
+  svgXml = 'image/svg+xml',
 
   aac = 'audio/aac',
   flac = 'audio/flac',
@@ -14,4 +17,5 @@ export enum MediaMimeTypeEnum {
   mov2 = 'video/quicktime',
   mp4 = 'video/mp4',
   webm = 'video/webm',
+  mpeg = 'video/mpeg',
 }

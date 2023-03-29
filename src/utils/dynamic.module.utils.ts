@@ -1,4 +1,4 @@
-import { ApiModule, CachingModule, ElasticModule, ApiModuleOptions, ElasticModuleOptions, CachingModuleOptions, ERDNEST_CONFIG_SERVICE } from "@elrondnetwork/erdnest";
+import { ApiModule, CachingModule, ElasticModule, ApiModuleOptions, ElasticModuleOptions, CachingModuleOptions, ERDNEST_CONFIG_SERVICE } from "@multiversx/sdk-nestjs";
 import { DynamicModule, Provider } from "@nestjs/common";
 import { ClientOptions, ClientProxyFactory, Transport } from "@nestjs/microservices";
 import { ApiConfigModule } from "src/common/api-config/api.config.module";
@@ -56,12 +56,11 @@ export class DynamicModuleUtils {
         const clientOptions: ClientOptions = {
           transport: Transport.REDIS,
           options: {
-            url: `redis://${apiConfigService.getRedisUrl()}:6379`,
+            host: apiConfigService.getRedisUrl(),
+            port: 6379,
             retryDelay: 1000,
             retryAttempts: 10,
-            retry_strategy: function (_: any) {
-              return 1000;
-            },
+            retryStrategy: () => 1000,
           },
         };
 

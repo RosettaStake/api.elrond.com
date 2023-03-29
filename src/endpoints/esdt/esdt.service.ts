@@ -1,162 +1,34 @@
-import { forwardRef, Inject, Injectable, Logger } from "@nestjs/common";
+import { forwardRef, Inject, Injectable } from "@nestjs/common";
 import { CacheInfo } from "src/utils/cache.info";
-import { GatewayComponentRequest } from "src/common/gateway/entities/gateway.component.request";
 import { TokenProperties } from "src/endpoints/tokens/entities/token.properties";
 import { VmQueryService } from "src/endpoints/vm.query/vm.query.service";
-import { TokenUtils } from "src/utils/token.utils";
+import { TokenHelpers } from "src/utils/token.helpers";
 import { ApiConfigService } from "../../common/api-config/api.config.service";
 import { GatewayService } from "../../common/gateway/gateway.service";
-import { MexTokenService } from "../mex/mex.token.service";
-import { TokenAssets } from "../../common/assets/entities/token.assets";
-import { TokenDetailed } from "../tokens/entities/token.detailed";
 import { TokenRoles } from "../tokens/entities/token.roles";
 import { AssetsService } from "../../common/assets/assets.service";
-import { TransactionService } from "../transactions/transaction.service";
 import { EsdtLockedAccount } from "./entities/esdt.locked.account";
 import { EsdtSupply } from "./entities/esdt.supply";
-import { AddressUtils, ApiUtils, BinaryUtils, Constants, NumberUtils, RecordUtils, CachingService, ElasticService, ElasticQuery, QueryConditionOptions, QueryType, QueryOperator, RangeGreaterThanOrEqual } from "@elrondnetwork/erdnest";
+import { BinaryUtils, Constants, CachingService, AddressUtils, OriginLogger, BatchUtils } from "@multiversx/sdk-nestjs";
+import { IndexerService } from "src/common/indexer/indexer.service";
+import { EsdtType } from "./entities/esdt.type";
+import { ElasticIndexerService } from "src/common/indexer/elastic/elastic.indexer.service";
+import { randomUUID } from "crypto";
 
 @Injectable()
 export class EsdtService {
-  private readonly logger: Logger;
+  private readonly logger = new OriginLogger(EsdtService.name);
 
   constructor(
     private readonly gatewayService: GatewayService,
     private readonly apiConfigService: ApiConfigService,
     private readonly cachingService: CachingService,
     private readonly vmQueryService: VmQueryService,
-    private readonly elasticService: ElasticService,
+    private readonly indexerService: IndexerService,
     @Inject(forwardRef(() => AssetsService))
     private readonly assetsService: AssetsService,
-    @Inject(forwardRef(() => TransactionService))
-    private readonly transactionService: TransactionService,
-    private readonly mexTokenService: MexTokenService,
-  ) {
-    this.logger = new Logger(EsdtService.name);
-  }
-
-  async getAllEsdtTokens(): Promise<TokenDetailed[]> {
-    return await this.cachingService.getOrSetCache(
-      CacheInfo.AllEsdtTokens.key,
-      async () => await this.getAllEsdtTokensRaw(),
-      CacheInfo.AllEsdtTokens.ttl
-    );
-  }
-
-  async getAllEsdtTokensRaw(): Promise<TokenDetailed[]> {
-    let tokensIdentifiers: string[];
-    try {
-      const getFungibleTokensResult = await this.gatewayService.get('network/esdt/fungible-tokens', GatewayComponentRequest.allFungibleTokens);
-
-      tokensIdentifiers = getFungibleTokensResult.tokens;
-    } catch (error) {
-      this.logger.error('Error when getting fungible tokens from gateway');
-      this.logger.error(error);
-      return [];
-    }
-
-    const tokensProperties = await this.cachingService.batchProcess(
-      tokensIdentifiers,
-      token => CacheInfo.EsdtProperties(token).key,
-      async (identifier: string) => await this.getEsdtTokenPropertiesRaw(identifier),
-      Constants.oneDay(),
-      true
-    );
-
-    const tokensAssets = await this.cachingService.batchProcess(
-      tokensIdentifiers,
-      token => CacheInfo.EsdtAssets(token).key,
-      async (identifier: string) => await this.getEsdtTokenAssetsRaw(identifier),
-      Constants.oneDay(),
-      true
-    );
-
-    let tokens = tokensProperties.zip(tokensAssets, (first, second) => ApiUtils.mergeObjects(new TokenDetailed, { ...first, assets: second }));
-
-    await this.batchProcessTokens(tokens);
-
-    await this.applyMexPrices(tokens);
-
-    tokens = tokens.sortedDescending(token => token.transactions ?? 0);
-
-    return tokens;
-  }
-
-  private async applyMexPrices(tokens: TokenDetailed[]): Promise<void> {
-    try {
-      const indexedTokens = await this.mexTokenService.getMexPricesRaw();
-      for (const token of tokens) {
-        let price = indexedTokens[token.identifier];
-        if (price) {
-          const supply = await this.getTokenSupply(token.identifier);
-
-          if (token.assets && token.identifier.split('-')[0] === 'EGLDUSDC') {
-            price = price / (10 ** 12) * 2;
-          }
-
-          token.price = price;
-          token.marketCap = price * NumberUtils.denominateString(supply.circulatingSupply, token.decimals);
-        }
-      }
-    } catch (error) {
-      this.logger.error('Could not apply mex tokens prices');
-      this.logger.error(error);
-    }
-  }
-
-  async batchProcessTokens(tokens: TokenDetailed[]) {
-    await this.cachingService.batchApply
-      (tokens,
-        token => CacheInfo.TokenTransactions(token.identifier).key,
-        async tokens => {
-          const result: { [key: string]: number } = {};
-
-          for (const token of tokens) {
-            const transactions = await this.transactionService.getTransactionCount({ tokens: [token.identifier, ...token.assets?.extraTokens ?? []] });
-
-            result[token.identifier] = transactions;
-          }
-
-          return RecordUtils.mapKeys(result, identifier => CacheInfo.TokenTransactions(identifier).key);
-        },
-        (token, transactions) => token.transactions = transactions,
-        CacheInfo.TokenTransactions('').ttl,
-      );
-
-    await this.cachingService.batchApply
-      (tokens,
-        token => CacheInfo.TokenAccounts(token.identifier).key,
-        async tokens => {
-          const result: { [key: string]: number } = {};
-
-          for (const token of tokens) {
-            let accounts = await this.cachingService.getCacheRemote<number>(CacheInfo.TokenAccountsExtra(token.identifier).key);
-            if (!accounts) {
-              accounts = await this.getEsdtAccountsCount(token.identifier);
-            }
-
-            result[token.identifier] = accounts;
-          }
-
-          return RecordUtils.mapKeys(result, identifier => CacheInfo.TokenAccounts(identifier).key);
-        },
-        (token, accounts) => token.accounts = accounts,
-        CacheInfo.TokenAccounts('').ttl,
-      );
-  }
-
-  async getEsdtAccountsCount(identifier: string): Promise<number> {
-    const elasticQuery: ElasticQuery = ElasticQuery.create()
-      .withCondition(QueryConditionOptions.must, [QueryType.Match("token", identifier, QueryOperator.AND)]);
-
-    const count = await this.elasticService.getCount("accountsesdt", elasticQuery);
-
-    return count;
-  }
-
-  private async getEsdtTokenAssetsRaw(identifier: string): Promise<TokenAssets | undefined> {
-    return await this.assetsService.getAssets(identifier);
-  }
+    private readonly elasticIndexerService: ElasticIndexerService
+  ) { }
 
   async getEsdtTokenProperties(identifier: string): Promise<TokenProperties | undefined> {
     const properties = await this.cachingService.getOrSetCache(
@@ -173,7 +45,36 @@ export class EsdtService {
     return properties;
   }
 
+  async getEsdtAddressesRoles(identifier: string): Promise<TokenRoles[] | undefined> {
+    const addressesRoles = await this.cachingService.getOrSetCache(
+      CacheInfo.EsdtAddressesRoles(identifier).key,
+      async () => await this.getEsdtAddressesRolesRaw(identifier),
+      Constants.oneWeek(),
+      CacheInfo.EsdtAddressesRoles(identifier).ttl
+    );
+
+    if (!addressesRoles) {
+      return undefined;
+    }
+
+    return addressesRoles;
+  }
+
   async getEsdtTokenPropertiesRaw(identifier: string): Promise<TokenProperties | null> {
+    const isIndexerV5Active = await this.elasticIndexerService.isIndexerV5Active();
+    if (isIndexerV5Active) {
+      return await this.getEsdtTokenPropertiesRawFromElastic(identifier);
+    } else {
+      return await this.getEsdtTokenPropertiesRawFromGateway(identifier);
+    }
+  }
+
+  async getEsdtTokenPropertiesRawFromElastic(identifier: string): Promise<TokenProperties | null> {
+    const elasticProperties = await this.elasticIndexerService.getEsdtProperties(identifier);
+    return this.mapEsdtTokenPropertiesFromElastic(elasticProperties);
+  }
+
+  async getEsdtTokenPropertiesRawFromGateway(identifier: string): Promise<TokenProperties | null> {
     const arg = Buffer.from(identifier, 'utf8').toString('hex');
 
     const tokenPropertiesEncoded = await this.vmQueryService.vmQuery(
@@ -222,23 +123,21 @@ export class EsdtService {
       type,
       owner: AddressUtils.bech32Encode(owner),
       decimals: parseInt(decimals.split('-').pop() ?? '0'),
-      isPaused: TokenUtils.canBool(isPaused),
-      canUpgrade: TokenUtils.canBool(canUpgrade),
-      canMint: TokenUtils.canBool(canMint),
-      canBurn: TokenUtils.canBool(canBurn),
-      canChangeOwner: TokenUtils.canBool(canChangeOwner),
-      canPause: TokenUtils.canBool(canPause),
-      canFreeze: TokenUtils.canBool(canFreeze),
-      canWipe: TokenUtils.canBool(canWipe),
-      canAddSpecialRoles: TokenUtils.canBool(canAddSpecialRoles),
-      canTransferNFTCreateRole: TokenUtils.canBool(canTransferNFTCreateRole),
-      NFTCreateStopped: TokenUtils.canBool(NFTCreateStopped),
+      isPaused: TokenHelpers.canBool(isPaused),
+      canUpgrade: TokenHelpers.canBool(canUpgrade),
+      canMint: TokenHelpers.canBool(canMint),
+      canBurn: TokenHelpers.canBool(canBurn),
+      canChangeOwner: TokenHelpers.canBool(canChangeOwner),
+      canPause: TokenHelpers.canBool(canPause),
+      canFreeze: TokenHelpers.canBool(canFreeze),
+      canWipe: TokenHelpers.canBool(canWipe),
+      canAddSpecialRoles: TokenHelpers.canBool(canAddSpecialRoles),
+      canTransferNFTCreateRole: TokenHelpers.canBool(canTransferNFTCreateRole),
+      NFTCreateStopped: TokenHelpers.canBool(NFTCreateStopped),
       wiped: wiped.split('-').pop() ?? '',
     };
 
     if (type === 'FungibleESDT') {
-      // @ts-ignore
-      delete tokenProps.canAddSpecialRoles;
       // @ts-ignore
       delete tokenProps.canTransferNFTCreateRole;
       // @ts-ignore
@@ -250,19 +149,69 @@ export class EsdtService {
     return tokenProps;
   }
 
-  async getEsdtAddressesRoles(identifier: string): Promise<TokenRoles[] | undefined> {
-    const addressesRoles = await this.cachingService.getOrSetCache(
-      CacheInfo.EsdtAddressesRoles(identifier).key,
-      async () => await this.getEsdtAddressesRolesRaw(identifier),
-      Constants.oneWeek(),
-      CacheInfo.EsdtAddressesRoles(identifier).ttl
-    );
+  async getAllFungibleTokenProperties(): Promise<TokenProperties[]> {
+    const isIndexerV5Active = await this.elasticIndexerService.isIndexerV5Active();
+    if (isIndexerV5Active) {
+      return await this.getAllFungibleTokenPropertiesFromElastic();
+    } else {
+      return await this.getAllFungibleTokenPropertiesFromGateway();
+    }
+  }
 
-    if (!addressesRoles) {
-      return undefined;
+  async getAllFungibleTokenPropertiesFromElastic(): Promise<TokenProperties[]> {
+    const elasticProperties = await this.elasticIndexerService.getAllFungibleTokens();
+    return elasticProperties.map(property => this.mapEsdtTokenPropertiesFromElastic(property));
+  }
+
+  async getAllFungibleTokenPropertiesFromGateway(): Promise<TokenProperties[]> {
+    let tokensIdentifiers: string[];
+    try {
+      tokensIdentifiers = await this.gatewayService.getEsdtFungibleTokens();
+    } catch (error) {
+      this.logger.error('Error when getting fungible tokens from gateway');
+      this.logger.error(error);
+      return [];
     }
 
-    return addressesRoles;
+    const tokensProperties = await this.cachingService.batchProcess(
+      tokensIdentifiers,
+      token => CacheInfo.EsdtProperties(token).key,
+      async (identifier: string) => await this.getEsdtTokenPropertiesRawFromGateway(identifier),
+      Constants.oneDay(),
+      true
+    );
+
+    return tokensProperties.filter(x => x !== null) as TokenProperties[];
+  }
+
+  private mapEsdtTokenPropertiesFromElastic(elasticProperties: any): TokenProperties {
+    const tokenProps = new TokenProperties({
+      identifier: elasticProperties.identifier,
+      name: elasticProperties.name,
+      type: elasticProperties.type as EsdtType,
+      owner: elasticProperties.currentOwner,
+      decimals: elasticProperties.numDecimals,
+      canUpgrade: elasticProperties.properties.canUpgrade,
+      canMint: elasticProperties.properties.canMint,
+      canBurn: elasticProperties.properties.canBurn,
+      canChangeOwner: elasticProperties.properties.canChangeOwner,
+      canPause: elasticProperties.properties.canPause,
+      canFreeze: elasticProperties.properties.canFreeze,
+      canWipe: elasticProperties.properties.canWipe,
+      canAddSpecialRoles: elasticProperties.properties.canAddSpecialRoles,
+      canTransferNFTCreateRole: elasticProperties.properties.canTransferNFTCreateRole,
+      NFTCreateStopped: elasticProperties.properties.NFTCreateStopped,
+      isPaused: elasticProperties.properties.isPaused ?? false,
+    });
+
+    if (elasticProperties.type === 'FungibleESDT') {
+      // @ts-ignore
+      delete tokenProps.canTransferNFTCreateRole;
+      // @ts-ignore
+      delete tokenProps.NFTCreateStopped;
+    }
+
+    return tokenProps;
   }
 
   async getEsdtAddressesRolesRaw(identifier: string): Promise<TokenRoles[] | null> {
@@ -297,7 +246,7 @@ export class EsdtService {
       }
 
       const role = BinaryUtils.base64Decode(valueEncoded);
-      TokenUtils.setTokenRole(currentAddressRoles, role);
+      TokenHelpers.setTokenRole(currentAddressRoles, role);
     }
 
     if (currentAddressRoles.address) {
@@ -316,7 +265,7 @@ export class EsdtService {
   }
 
   async getLockedAccountsRaw(identifier: string): Promise<EsdtLockedAccount[]> {
-    const tokenAssets = await this.assetsService.getAssets(identifier);
+    const tokenAssets = await this.assetsService.getTokenAssets(identifier);
     if (!tokenAssets) {
       return [];
     }
@@ -364,7 +313,7 @@ export class EsdtService {
   }
 
   async getTokenSupply(identifier: string): Promise<EsdtSupply> {
-    const { supply, minted, burned, initialMinted } = await this.gatewayService.get(`network/esdt/supply/${identifier}`, GatewayComponentRequest.esdtSupply);
+    const { supply, minted, burned, initialMinted } = await this.gatewayService.getEsdtSupply(identifier);
 
     const isCollectionOrToken = identifier.split('-').length === 2;
     if (isCollectionOrToken) {
@@ -398,42 +347,28 @@ export class EsdtService {
   }
 
   async countAllAccounts(identifiers: string[]): Promise<number> {
-    const key = `tokens:${identifiers[0]}:distinctAccounts`;
+    const key = `tokens:${identifiers[0]}:distinctAccounts:${randomUUID()}`;
 
-    for (const identifier of identifiers) {
-      const query = ElasticQuery.create()
-        .withPagination({ from: 0, size: 10000 })
-        .withMustMatchCondition('token', identifier, QueryOperator.AND);
+    try {
+      for (const identifier of identifiers) {
+        await this.indexerService.getAllAccountsWithToken(identifier, async items => {
+          const distinctAccounts: string[] = items.map(x => x.address).distinct();
+          if (distinctAccounts.length > 0) {
+            const chunks = BatchUtils.splitArrayIntoChunks(distinctAccounts, 100);
+            for (const chunk of chunks) {
+              await this.cachingService.setAdd(key, ...chunk);
+            }
+          }
+        });
+      }
 
-      await this.elasticService.getScrollableList('accountsesdt', 'id', query, async items => {
-        const distinctAccounts: string[] = items.map(x => x.address).distinct();
-        if (distinctAccounts.length > 0) {
-          await this.cachingService.setAdd(key, ...distinctAccounts);
-        }
-      });
+      return await this.cachingService.setCount(key);
+    } finally {
+      await this.cachingService.deleteInCache(key);
     }
-
-    const count = await this.cachingService.setCount(key);
-
-    await this.cachingService.deleteInCache(key);
-
-    return count;
   }
 
   async getAccountEsdtByAddressesAndIdentifier(identifier: string, addresses: string[]): Promise<any[]> {
-    const queries = [];
-
-    for (const address of addresses) {
-      queries.push(QueryType.Match('address', address));
-    }
-
-    const elasticQuery = ElasticQuery.create()
-      .withPagination({ from: 0, size: addresses.length })
-      .withCondition(QueryConditionOptions.mustNot, [QueryType.Match("address", "pending-")])
-      .withCondition(QueryConditionOptions.must, [QueryType.Match('token', identifier, QueryOperator.AND)])
-      .withRangeFilter("balanceNum", new RangeGreaterThanOrEqual(0))
-      .withCondition(QueryConditionOptions.should, queries);
-
-    return await this.elasticService.getList('accountsesdt', 'identifier', elasticQuery);
+    return await this.indexerService.getAccountEsdtByAddressesAndIdentifier(identifier, addresses);
   }
 }

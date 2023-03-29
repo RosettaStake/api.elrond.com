@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Logger, Param, Post, Query, Res } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Get, Param, Post, Query, Res } from "@nestjs/common";
 import { ApiExcludeEndpoint, ApiQuery, ApiResponse, ApiTags } from "@nestjs/swagger";
 import { VmQueryRequest } from "../vm.query/entities/vm.query.request";
 import { VmQueryService } from "../vm.query/vm.query.service";
@@ -6,21 +6,20 @@ import { GatewayService } from "src/common/gateway/gateway.service";
 import { Response } from "express";
 import { GatewayComponentRequest } from "src/common/gateway/entities/gateway.component.request";
 import { PluginService } from "src/common/plugins/plugin.service";
-import { Constants, ParseAddressPipe, ParseBlockHashPipe, ParseTransactionHashPipe, CachingService, NoCache } from "@elrondnetwork/erdnest";
+import { Constants, ParseAddressPipe, ParseBlockHashPipe, ParseTransactionHashPipe, CachingService, NoCache } from "@multiversx/sdk-nestjs";
+import { OriginLogger } from "@multiversx/sdk-nestjs";
 
 @Controller()
 @ApiTags('proxy')
 export class ProxyController {
-  private readonly logger: Logger;
+  private readonly logger = new OriginLogger(ProxyController.name);
 
   constructor(
     private readonly gatewayService: GatewayService,
     private readonly vmQueryService: VmQueryService,
     private readonly cachingService: CachingService,
     private readonly pluginService: PluginService,
-  ) {
-    this.logger = new Logger(ProxyController.name);
-  }
+  ) { }
 
   @Get('/address/:address')
   @ApiExcludeEndpoint()
@@ -46,16 +45,22 @@ export class ProxyController {
     return await this.gatewayGet(`address/${address}/shard`, GatewayComponentRequest.addressShard);
   }
 
-  @Get('/address/:address/storage/:key')
+  @Get('/address/:address/key/:key')
   @ApiExcludeEndpoint()
   async getAddressStorageKey(@Param('address', ParseAddressPipe) address: string, @Param('key') key: string) {
-    return await this.gatewayGet(`address/${address}/storage/${key}`, GatewayComponentRequest.addressStorage);
+    return await this.gatewayGet(`address/${address}/key/${key}`, GatewayComponentRequest.addressStorage);
   }
 
   @Get('/address/:address/transactions')
   @ApiExcludeEndpoint()
   async getAddressTransactions(@Param('address', ParseAddressPipe) address: string) {
     return await this.gatewayGet(`address/${address}/transactions`, GatewayComponentRequest.addressTransactions);
+  }
+
+  @Get('/address/:address/guardian-data')
+  @ApiExcludeEndpoint()
+  async getAddressGuardianData(@Param('address', ParseAddressPipe) address: string) {
+    return await this.gatewayGet(`address/${address}/guardian-data`, GatewayComponentRequest.guardianData);
   }
 
   @Get('/address/:address/esdt')

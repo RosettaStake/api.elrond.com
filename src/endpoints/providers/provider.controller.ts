@@ -1,18 +1,16 @@
-import {
-  Controller,
+import {  Controller,
   DefaultValuePipe,
   Get,
   HttpException,
   HttpStatus,
   Param,
   ParseIntPipe,
-  Query,
-} from "@nestjs/common";
-import {ApiNotFoundResponse, ApiOkResponse, ApiOperation, ApiQuery, ApiTags} from "@nestjs/swagger";
-import {ProviderService} from "./provider.service";
-import {Provider} from "./entities/provider";
-import {ProviderFilter} from "./entities/provider.filter";
-import {ElasticSortOrder, ParseAddressPipe} from "@elrondnetwork/erdnest";
+  Query, } from "@nestjs/common";
+import { ApiNotFoundResponse, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
+import { ProviderService } from "./provider.service";
+import { Provider } from "./entities/provider";
+import { ParseAddressArrayPipe, ParseAddressPipe, ElasticSortOrder } from "@multiversx/sdk-nestjs";
+import { ProviderFilter } from "./entities/provider.filter";
 import {Delegator} from "./entities/delegator";
 
 @Controller()
@@ -24,10 +22,12 @@ export class ProviderController {
   @ApiOperation({ summary: 'Providers', description: 'Returns a list of all providers' })
   @ApiOkResponse({ type: [Provider] })
   @ApiQuery({ name: 'identity', description: 'Search by identity', required: false })
+  @ApiQuery({ name: 'providers', description: 'Search by multiple providers address', required: false })
   async getProviders(
     @Query('identity') identity?: string,
+    @Query('providers', ParseAddressArrayPipe) providers?: string[],
   ): Promise<Provider[]> {
-    return await this.providerService.getProviders(new ProviderFilter({ identity }));
+    return await this.providerService.getProviders(new ProviderFilter({ identity, providers }));
   }
 
   @Get('/providers/:address')

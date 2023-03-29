@@ -1,4 +1,4 @@
-import { BadRequestException, Controller, DefaultValuePipe, Get, HttpException, HttpStatus, Logger, NotFoundException, Param, ParseIntPipe, Query } from '@nestjs/common';
+import { Controller, DefaultValuePipe, Get, HttpException, HttpStatus, NotFoundException, Param, Query } from '@nestjs/common';
 import { ApiExcludeEndpoint, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { AccountService } from './account.service';
 import { AccountDetailed } from './entities/account.detailed';
@@ -21,7 +21,7 @@ import { DeployedContract } from './entities/deployed.contract';
 import { SmartContractResult } from '../sc-results/entities/smart.contract.result';
 import { SmartContractResultService } from '../sc-results/scresult.service';
 import { CollectionService } from '../collections/collection.service';
-import { NftCollectionRole } from '../collections/entities/nft.collection.role';
+import { NftCollectionWithRoles } from '../collections/entities/nft.collection.with.roles';
 import { SortOrder } from 'src/common/entities/sort.order';
 import { AccountHistory } from "./entities/account.history";
 import { AccountEsdtHistory } from "./entities/account.esdt.history";
@@ -33,7 +33,7 @@ import { ProviderStake } from '../stake/entities/provider.stake';
 import { TokenDetailedWithBalance } from '../tokens/entities/token.detailed.with.balance';
 import { NftCollectionAccount } from '../collections/entities/nft.collection.account';
 import { TokenWithRoles } from '../tokens/entities/token.with.roles';
-import { ParseAddressPipe, ParseArrayPipe, ParseBlockHashPipe, ParseOptionalBoolPipe, ParseOptionalEnumArrayPipe, ParseOptionalEnumPipe, ParseOptionalIntPipe, ParseTransactionHashPipe } from '@elrondnetwork/erdnest';
+import { ParseAddressPipe, ParseArrayPipe, ParseBlockHashPipe, ParseCollectionPipe, ParseNftPipe, ParseBoolPipe, ParseEnumArrayPipe, ParseEnumPipe, ParseIntPipe, ParseTokenOrNftPipe, ParseTransactionHashPipe, ParseAddressArrayPipe, ApplyComplexity } from '@multiversx/sdk-nestjs';
 import { QueryPagination } from 'src/common/entities/query.pagination';
 import { TransactionQueryOptions } from '../transactions/entities/transactions.query.options';
 import { TokenWithRolesFilter } from '../tokens/entities/token.with.roles.filter';
@@ -42,11 +42,19 @@ import { TokenFilter } from '../tokens/entities/token.filter';
 import { NftFilter } from '../nfts/entities/nft.filter';
 import { NftQueryOptions } from '../nfts/entities/nft.query.options';
 import { TransactionFilter } from '../transactions/entities/transaction.filter';
+import { ParseTokenPipe } from '@multiversx/sdk-nestjs';
+import { TransactionDetailed } from '../transactions/entities/transaction.detailed';
+import { OriginLogger } from '@multiversx/sdk-nestjs';
+import { AccountDelegation } from '../stake/entities/account.delegation';
+import { DelegationService } from '../delegation/delegation.service';
+import { TokenType } from '../tokens/entities/token.type';
+import { ContractUpgrades } from './entities/contract.upgrades';
+import { AccountVerification } from './entities/account.verification';
 
 @Controller()
 @ApiTags('accounts')
 export class AccountController {
-  private readonly logger: Logger;
+  private readonly logger = new OriginLogger(AccountController.name);
 
   constructor(
     private readonly accountService: AccountService,
@@ -59,10 +67,9 @@ export class AccountController {
     private readonly scResultService: SmartContractResultService,
     private readonly collectionService: CollectionService,
     private readonly transferService: TransferService,
-    private readonly apiConfigService: ApiConfigService
-  ) {
-    this.logger = new Logger(AccountController.name);
-  }
+    private readonly apiConfigService: ApiConfigService,
+    private readonly delegationService: DelegationService,
+  ) { }
 
   @Get("/accounts")
   @ApiOperation({ summary: 'Accounts details', description: 'Returns all accounts available on blockchain. By default it returns 25 accounts' })
@@ -95,7 +102,7 @@ export class AccountController {
   async getAccountDetails(@Param('address', ParseAddressPipe) address: string): Promise<AccountDetailed> {
     const account = await this.accountService.getAccount(address);
     if (!account) {
-      throw new HttpException('Account not found', HttpStatus.NOT_FOUND);
+      throw new NotFoundException('Account not found');
     }
 
     return account;
@@ -114,26 +121,43 @@ export class AccountController {
     }
   }
 
+  @Get("/accounts/:address/verification")
+  @ApiOperation({ summary: 'Account verification details', description: 'Returns contract verification details' })
+  @ApiOkResponse({ type: AccountVerification })
+  async getAccountVerification(@Param('address', ParseAddressPipe) address: string): Promise<AccountVerification | null> {
+    try {
+      return await this.accountService.getAccountVerification(address);
+    } catch (error) {
+      this.logger.error(`Error in getAccountVerification for address ${address}`);
+      this.logger.error(error);
+      throw new HttpException('Account verification not found', HttpStatus.NOT_FOUND);
+    }
+  }
+
   @Get("/accounts/:address/tokens")
   @ApiOperation({ summary: 'Account tokens', description: 'Returns a list of all available fungible tokens for a given address, together with their balance' })
   @ApiQuery({ name: 'from', description: 'Number of items to skip for the result set', required: false })
   @ApiQuery({ name: 'size', description: 'Number of items to retrieve', required: false })
+  @ApiQuery({ name: 'type', description: 'Token type', required: false, enum: TokenType })
   @ApiQuery({ name: 'search', description: 'Search by collection identifier', required: false })
   @ApiQuery({ name: 'name', description: 'Search by token name', required: false })
   @ApiQuery({ name: 'identifier', description: 'Search by token identifier', required: false })
-  @ApiQuery({ name: 'identifiers', description: 'A comma-separated list of identifiers to filter by', required: false })
+  @ApiQuery({ name: 'identifiers', description: 'A comma-separated list of identifiers to filter by', required: false, type: String })
+  @ApiQuery({ name: 'includeMetaESDT', description: 'Include MetaESDTs in response', required: false, type: Boolean })
   @ApiOkResponse({ type: [TokenWithBalance] })
   async getAccountTokens(
     @Param('address', ParseAddressPipe) address: string,
     @Query('from', new DefaultValuePipe(0), ParseIntPipe) from: number,
     @Query('size', new DefaultValuePipe(25), ParseIntPipe) size: number,
+    @Query('type', new ParseEnumPipe(TokenType)) type?: TokenType,
     @Query('search') search?: string,
     @Query('name') name?: string,
     @Query('identifier') identifier?: string,
     @Query('identifiers', ParseArrayPipe) identifiers?: string[],
+    @Query('includeMetaESDT', new ParseBoolPipe) includeMetaESDT?: boolean,
   ): Promise<TokenWithBalance[]> {
     try {
-      return await this.tokenService.getTokensForAddress(address, new QueryPagination({ from, size }), new TokenFilter({ search, name, identifier, identifiers }));
+      return await this.tokenService.getTokensForAddress(address, new QueryPagination({ from, size }), new TokenFilter({ type, search, name, identifier, identifiers, includeMetaESDT }));
     } catch (error) {
       this.logger.error(`Error in getAccountTokens for address ${address}`);
       this.logger.error(error);
@@ -144,10 +168,24 @@ export class AccountController {
 
   @Get("/accounts/:address/tokens/count")
   @ApiOperation({ summary: 'Account token count', description: 'Returns the total number of tokens for a given address' })
+  @ApiQuery({ name: 'type', description: 'Token type', required: false, enum: TokenType })
+  @ApiQuery({ name: 'search', description: 'Search by collection identifier', required: false })
+  @ApiQuery({ name: 'name', description: 'Search by token name', required: false })
+  @ApiQuery({ name: 'identifier', description: 'Search by token identifier', required: false })
+  @ApiQuery({ name: 'identifiers', description: 'A comma-separated list of identifiers to filter by', required: false, type: String })
+  @ApiQuery({ name: 'includeMetaESDT', description: 'Include MetaESDTs in response', required: false, type: Boolean })
   @ApiOkResponse({ type: Number })
-  async getTokenCount(@Param('address', ParseAddressPipe) address: string): Promise<number> {
+  async getTokenCount(
+    @Param('address', ParseAddressPipe) address: string,
+    @Query('type', new ParseEnumPipe(TokenType)) type?: TokenType,
+    @Query('search') search?: string,
+    @Query('name') name?: string,
+    @Query('identifier') identifier?: string,
+    @Query('identifiers', ParseArrayPipe) identifiers?: string[],
+    @Query('includeMetaESDT', new ParseBoolPipe) includeMetaESDT?: boolean,
+  ): Promise<number> {
     try {
-      return await this.tokenService.getTokenCountForAddress(address);
+      return await this.tokenService.getTokenCountForAddress(address, new TokenFilter({ type, search, name, identifier, identifiers, includeMetaESDT }));
     } catch (error) {
       this.logger.error(`Error in getTokenCount for address ${address}`);
       this.logger.error(error);
@@ -158,9 +196,17 @@ export class AccountController {
 
   @Get("/accounts/:address/tokens/c")
   @ApiExcludeEndpoint()
-  async getTokenCountAlternative(@Param('address', ParseAddressPipe) address: string): Promise<number> {
+  async getTokenCountAlternative(
+    @Param('address', ParseAddressPipe) address: string,
+    @Query('type', new ParseEnumPipe(TokenType)) type?: TokenType,
+    @Query('search') search?: string,
+    @Query('name') name?: string,
+    @Query('identifier') identifier?: string,
+    @Query('identifiers', ParseArrayPipe) identifiers?: string[],
+    @Query('includeMetaESDT', new ParseBoolPipe) includeMetaESDT?: boolean,
+  ): Promise<number> {
     try {
-      return await this.tokenService.getTokenCountForAddress(address);
+      return await this.tokenService.getTokenCountForAddress(address, new TokenFilter({ type, search, name, identifier, identifiers, includeMetaESDT }));
     } catch (error) {
       this.logger.error(`Error in getTokenCount for address ${address}`);
       this.logger.error(error);
@@ -174,7 +220,7 @@ export class AccountController {
   @ApiOperation({ summary: 'Account token details', description: 'Returns details about a specific fungible token from a given address' })
   async getAccountToken(
     @Param('address', ParseAddressPipe) address: string,
-    @Param('token') token: string,
+    @Param('token', ParseTokenOrNftPipe) token: string,
   ): Promise<TokenDetailedWithBalance> {
     const result = await this.tokenService.getTokenForAddress(address, token);
     if (!result) {
@@ -197,22 +243,24 @@ export class AccountController {
   @ApiQuery({ name: 'canUpdateAttributes', description: 'Filter by property canUpdateAttributes (boolean)', required: false })
   @ApiQuery({ name: 'canAddUri', description: 'Filter by property canAddUri (boolean)', required: false })
   @ApiQuery({ name: 'canTransferRole', description: 'Filter by property canTransferRole (boolean)', required: false })
-  @ApiOkResponse({ type: [NftCollectionRole] })
+  @ApiQuery({ name: 'excludeMetaESDT', description: 'Exclude collections of type "MetaESDT" in the response', required: false, type: Boolean })
+  @ApiOkResponse({ type: [NftCollectionWithRoles] })
   async getAccountCollectionsWithRoles(
     @Param('address', ParseAddressPipe) address: string,
     @Query('from', new DefaultValuePipe(0), ParseIntPipe) from: number,
     @Query('size', new DefaultValuePipe(25), ParseIntPipe) size: number,
     @Query('search') search?: string,
-    @Query('type', new ParseOptionalEnumArrayPipe(NftType)) type?: NftType[],
-    @Query('owner') owner?: string,
-    @Query('canCreate', new ParseOptionalBoolPipe) canCreate?: boolean,
-    @Query('canBurn', new ParseOptionalBoolPipe) canBurn?: boolean,
-    @Query('canAddQuantity', new ParseOptionalBoolPipe) canAddQuantity?: boolean,
-    @Query('canUpdateAttributes', new ParseOptionalBoolPipe) canUpdateAttributes?: boolean,
-    @Query('canAddUri', new ParseOptionalBoolPipe) canAddUri?: boolean,
-    @Query('canTransferRole', new ParseOptionalBoolPipe) canTransferRole?: boolean,
-  ): Promise<NftCollectionRole[]> {
-    return await this.collectionService.getCollectionsWithRolesForAddress(address, new CollectionFilter({ search, type, owner, canCreate, canBurn, canAddQuantity, canUpdateAttributes, canAddUri, canTransferRole }), new QueryPagination({ from, size }));
+    @Query('type', new ParseEnumArrayPipe(NftType)) type?: NftType[],
+    @Query('owner', ParseAddressPipe) owner?: string,
+    @Query('canCreate', new ParseBoolPipe) canCreate?: boolean,
+    @Query('canBurn', new ParseBoolPipe) canBurn?: boolean,
+    @Query('canAddQuantity', new ParseBoolPipe) canAddQuantity?: boolean,
+    @Query('canUpdateAttributes', new ParseBoolPipe) canUpdateAttributes?: boolean,
+    @Query('canAddUri', new ParseBoolPipe) canAddUri?: boolean,
+    @Query('canTransferRole', new ParseBoolPipe) canTransferRole?: boolean,
+    @Query('excludeMetaESDT', new ParseBoolPipe) excludeMetaESDT?: boolean,
+  ): Promise<NftCollectionWithRoles[]> {
+    return await this.collectionService.getCollectionsWithRolesForAddress(address, new CollectionFilter({ search, type, owner, canCreate, canBurn, canAddQuantity, canUpdateAttributes, canAddUri, canTransferRole, excludeMetaESDT }), new QueryPagination({ from, size }));
   }
 
   @Get("/accounts/:address/roles/collections/count")
@@ -223,17 +271,19 @@ export class AccountController {
   @ApiQuery({ name: 'canCreate', description: 'Filter by property canCreate (boolean)', required: false })
   @ApiQuery({ name: 'canBurn', description: 'Filter by property canCreate (boolean)', required: false })
   @ApiQuery({ name: 'canAddQuantity', description: 'Filter by property canAddQuantity (boolean)', required: false })
+  @ApiQuery({ name: 'excludeMetaESDT', description: 'Exclude collections of type "MetaESDT" in the response', required: false, type: Boolean })
   @ApiOkResponse({ type: Number })
   async getCollectionWithRolesCount(
     @Param('address', ParseAddressPipe) address: string,
     @Query('search') search?: string,
-    @Query('type', new ParseOptionalEnumArrayPipe(NftType)) type?: NftType[],
+    @Query('type', new ParseEnumArrayPipe(NftType)) type?: NftType[],
     @Query('owner', ParseAddressPipe) owner?: string,
-    @Query('canCreate', new ParseOptionalBoolPipe) canCreate?: boolean,
-    @Query('canBurn', new ParseOptionalBoolPipe) canBurn?: boolean,
-    @Query('canAddQuantity', new ParseOptionalBoolPipe) canAddQuantity?: boolean,
+    @Query('canCreate', new ParseBoolPipe) canCreate?: boolean,
+    @Query('canBurn', new ParseBoolPipe) canBurn?: boolean,
+    @Query('canAddQuantity', new ParseBoolPipe) canAddQuantity?: boolean,
+    @Query('excludeMetaESDT', new ParseBoolPipe) excludeMetaESDT?: boolean,
   ): Promise<number> {
-    return await this.collectionService.getCollectionCountForAddressWithRoles(address, new CollectionFilter({ search, type, owner, canCreate, canBurn, canAddQuantity }));
+    return await this.collectionService.getCollectionCountForAddressWithRoles(address, new CollectionFilter({ search, type, owner, canCreate, canBurn, canAddQuantity, excludeMetaESDT }));
   }
 
   @Get("/accounts/:address/roles/collections/c")
@@ -241,22 +291,25 @@ export class AccountController {
   async getCollectionCountAlternative(
     @Param('address', ParseAddressPipe) address: string,
     @Query('search') search?: string,
-    @Query('type', new ParseOptionalEnumArrayPipe(NftType)) type?: NftType[],
+    @Query('type', new ParseEnumArrayPipe(NftType)) type?: NftType[],
     @Query('owner', ParseAddressPipe) owner?: string,
-    @Query('canCreate', new ParseOptionalBoolPipe) canCreate?: boolean,
-    @Query('canBurn', new ParseOptionalBoolPipe) canBurn?: boolean,
-    @Query('canAddQuantity', new ParseOptionalBoolPipe) canAddQuantity?: boolean,
+    @Query('canCreate', new ParseBoolPipe) canCreate?: boolean,
+    @Query('canBurn', new ParseBoolPipe) canBurn?: boolean,
+    @Query('canAddQuantity', new ParseBoolPipe) canAddQuantity?: boolean,
+    @Query('excludeMetaESDT', new ParseBoolPipe) excludeMetaESDT?: boolean,
   ): Promise<number> {
-    return await this.collectionService.getCollectionCountForAddressWithRoles(address, new CollectionFilter({ search, type, owner, canCreate, canBurn, canAddQuantity }));
+    return await this.collectionService.getCollectionCountForAddressWithRoles(address, new CollectionFilter({
+      search, type, owner, canCreate, canBurn, canAddQuantity, excludeMetaESDT,
+    }));
   }
 
   @Get("/accounts/:address/roles/collections/:collection")
   @ApiOperation({ summary: 'Account collection details', description: 'Returns details about a specific NFT/SFT/MetaESDT collection from a given address' })
-  @ApiOkResponse({ type: NftCollectionRole })
+  @ApiOkResponse({ type: NftCollectionWithRoles })
   async getAccountCollection(
     @Param('address', ParseAddressPipe) address: string,
-    @Param('collection') collection: string,
-  ): Promise<NftCollectionRole> {
+    @Param('collection', ParseCollectionPipe) collection: string,
+  ): Promise<NftCollectionWithRoles> {
     const result = await this.collectionService.getCollectionForAddressWithRole(address, collection);
     if (!result) {
       throw new NotFoundException('Collection for given account not found');
@@ -273,6 +326,7 @@ export class AccountController {
   @ApiQuery({ name: 'owner', description: 'Filter by token owner', required: false })
   @ApiQuery({ name: 'canMint', description: 'Filter by property canMint (boolean)', required: false })
   @ApiQuery({ name: 'canBurn', description: 'Filter by property canBurn (boolean)', required: false })
+  @ApiQuery({ name: 'includeMetaESDT', description: 'Include MetaESDTs in response', required: false, type: Boolean })
   @ApiOkResponse({ type: [TokenWithRoles] })
   async getAccountTokensWithRoles(
     @Param('address', ParseAddressPipe) address: string,
@@ -280,10 +334,11 @@ export class AccountController {
     @Query('size', new DefaultValuePipe(25), ParseIntPipe) size: number,
     @Query('search') search?: string,
     @Query('owner', ParseAddressPipe) owner?: string,
-    @Query('canMint', new ParseOptionalBoolPipe) canMint?: boolean,
-    @Query('canBurn', new ParseOptionalBoolPipe) canBurn?: boolean,
+    @Query('canMint', new ParseBoolPipe) canMint?: boolean,
+    @Query('canBurn', new ParseBoolPipe) canBurn?: boolean,
+    @Query('includeMetaESDT', new ParseBoolPipe) includeMetaESDT?: boolean,
   ): Promise<TokenWithRoles[]> {
-    return await this.tokenService.getTokensWithRolesForAddress(address, new TokenWithRolesFilter({ search, owner, canMint, canBurn }), new QueryPagination({ from, size }));
+    return await this.tokenService.getTokensWithRolesForAddress(address, new TokenWithRolesFilter({ search, owner, canMint, canBurn, includeMetaESDT }), new QueryPagination({ from, size }));
   }
 
   @Get("/accounts/:address/roles/tokens/count")
@@ -292,16 +347,17 @@ export class AccountController {
   @ApiQuery({ name: 'owner', description: 'Filter by token owner', required: false })
   @ApiQuery({ name: 'canMint', description: 'Filter by property canMint (boolean)', required: false })
   @ApiQuery({ name: 'canBurn', description: 'Filter by property canCreate (boolean)', required: false })
-  @ApiQuery({ name: 'canAddQuantity', description: 'Filter by property canAddQuantity (boolean)', required: false })
+  @ApiQuery({ name: 'includeMetaESDT', description: 'Include MetaESDTs in response', required: false, type: Boolean })
   @ApiOkResponse({ type: Number })
   async getTokensWithRolesCount(
     @Param('address', ParseAddressPipe) address: string,
     @Query('search') search?: string,
     @Query('owner', ParseAddressPipe) owner?: string,
-    @Query('canMint', new ParseOptionalBoolPipe) canMint?: boolean,
-    @Query('canBurn', new ParseOptionalBoolPipe) canBurn?: boolean,
+    @Query('canMint', new ParseBoolPipe) canMint?: boolean,
+    @Query('canBurn', new ParseBoolPipe) canBurn?: boolean,
+    @Query('includeMetaESDT', new ParseBoolPipe) includeMetaESDT?: boolean,
   ): Promise<number> {
-    return await this.tokenService.getTokensWithRolesForAddressCount(address, new TokenWithRolesFilter({ search, owner, canMint, canBurn }));
+    return await this.tokenService.getTokensWithRolesForAddressCount(address, new TokenWithRolesFilter({ search, owner, canMint, canBurn, includeMetaESDT }));
   }
 
   @Get("/accounts/:address/roles/tokens/c")
@@ -310,10 +366,11 @@ export class AccountController {
     @Param('address', ParseAddressPipe) address: string,
     @Query('search') search?: string,
     @Query('owner', ParseAddressPipe) owner?: string,
-    @Query('canMint', new ParseOptionalBoolPipe) canMint?: boolean,
-    @Query('canBurn', new ParseOptionalBoolPipe) canBurn?: boolean,
+    @Query('canMint', new ParseBoolPipe) canMint?: boolean,
+    @Query('canBurn', new ParseBoolPipe) canBurn?: boolean,
+    @Query('includeMetaESDT', new ParseBoolPipe) includeMetaESDT?: boolean,
   ): Promise<number> {
-    return await this.tokenService.getTokensWithRolesForAddressCount(address, new TokenWithRolesFilter({ search, owner, canMint, canBurn }));
+    return await this.tokenService.getTokensWithRolesForAddressCount(address, new TokenWithRolesFilter({ search, owner, canMint, canBurn, includeMetaESDT }));
   }
 
   @Get("/accounts/:address/roles/tokens/:identifier")
@@ -321,7 +378,7 @@ export class AccountController {
   @ApiOkResponse({ type: TokenWithRoles })
   async getTokenWithRoles(
     @Param('address', ParseAddressPipe) address: string,
-    @Param('identifier') identifier: string,
+    @Param('identifier', ParseTokenPipe) identifier: string,
   ): Promise<TokenWithRoles> {
     const result = await this.tokenService.getTokenWithRolesForAddress(address, identifier);
     if (!result) {
@@ -337,28 +394,32 @@ export class AccountController {
   @ApiQuery({ name: 'size', description: 'Number of items to retrieve', required: false })
   @ApiQuery({ name: 'search', description: 'Search by collection identifier', required: false })
   @ApiQuery({ name: 'type', description: 'Filter by type (NonFungibleESDT/SemiFungibleESDT/MetaESDT)', required: false })
+  @ApiQuery({ name: 'excludeMetaESDT', description: 'Exclude collections of type "MetaESDT" in the response', required: false, type: Boolean })
   @ApiOkResponse({ type: [NftCollectionAccount] })
   async getAccountNftCollections(
     @Param('address', ParseAddressPipe) address: string,
     @Query('from', new DefaultValuePipe(0), ParseIntPipe) from: number,
     @Query('size', new DefaultValuePipe(25), ParseIntPipe) size: number,
     @Query('search') search?: string,
-    @Query('type', new ParseOptionalEnumArrayPipe(NftType)) type?: NftType[],
+    @Query('type', new ParseEnumArrayPipe(NftType)) type?: NftType[],
+    @Query('excludeMetaESDT', new ParseBoolPipe) excludeMetaESDT?: boolean,
   ): Promise<NftCollectionAccount[]> {
-    return await this.collectionService.getCollectionsForAddress(address, new CollectionFilter({ search, type }), new QueryPagination({ from, size }));
+    return await this.collectionService.getCollectionsForAddress(address, new CollectionFilter({ search, type, excludeMetaESDT }), new QueryPagination({ from, size }));
   }
 
   @Get("/accounts/:address/collections/count")
   @ApiOperation({ summary: 'Account collection count', description: 'Returns the total number of NFT/SFT/MetaESDT collections where the account is owner or has some special roles assigned to it' })
   @ApiQuery({ name: 'search', description: 'Search by collection identifier', required: false })
   @ApiQuery({ name: 'type', description: 'Filter by type (NonFungibleESDT/SemiFungibleESDT/MetaESDT)', required: false })
+  @ApiQuery({ name: 'excludeMetaESDT', description: 'Exclude collections of type "MetaESDT" in the response', required: false, type: Boolean })
   @ApiOkResponse({ type: Number })
   async getNftCollectionCount(
     @Param('address', ParseAddressPipe) address: string,
     @Query('search') search?: string,
-    @Query('type', new ParseOptionalEnumArrayPipe(NftType)) type?: NftType[],
+    @Query('type', new ParseEnumArrayPipe(NftType)) type?: NftType[],
+    @Query('excludeMetaESDT', new ParseBoolPipe) excludeMetaESDT?: boolean,
   ): Promise<number> {
-    return await this.collectionService.getCollectionCountForAddress(address, new CollectionFilter({ search, type }));
+    return await this.collectionService.getCollectionCountForAddress(address, new CollectionFilter({ search, type, excludeMetaESDT }));
   }
 
   @Get("/accounts/:address/collections/c")
@@ -366,9 +427,10 @@ export class AccountController {
   async getNftCollectionCountAlternative(
     @Param('address', ParseAddressPipe) address: string,
     @Query('search') search?: string,
-    @Query('type', new ParseOptionalEnumArrayPipe(NftType)) type?: NftType[],
+    @Query('type', new ParseEnumArrayPipe(NftType)) type?: NftType[],
+    @Query('excludeMetaESDT', new ParseBoolPipe) excludeMetaESDT?: boolean,
   ): Promise<number> {
-    return await this.collectionService.getCollectionCountForAddress(address, new CollectionFilter({ search, type }));
+    return await this.collectionService.getCollectionCountForAddress(address, new CollectionFilter({ search, type, excludeMetaESDT }));
   }
 
   @Get("/accounts/:address/collections/:collection")
@@ -376,7 +438,7 @@ export class AccountController {
   @ApiOkResponse({ type: NftCollectionAccount })
   async getAccountNftCollection(
     @Param('address', ParseAddressPipe) address: string,
-    @Param('collection') collection: string,
+    @Param('collection', ParseCollectionPipe) collection: string,
   ): Promise<NftCollectionAccount> {
     const result = await this.collectionService.getCollectionForAddress(address, collection);
     if (!result) {
@@ -387,6 +449,7 @@ export class AccountController {
   }
 
   @Get("/accounts/:address/nfts")
+  @ApiOkResponse({ type: [NftAccount] })
   @ApiOperation({ summary: 'Account NFTs', description: 'Returns a list of all available NFTs/SFTs/MetaESDTs owned by the provided address' })
   @ApiQuery({ name: 'from', description: 'Number of items to skip for the result set', required: false })
   @ApiQuery({ name: 'size', description: 'Number of items to retrieve', required: false })
@@ -402,7 +465,10 @@ export class AccountController {
   @ApiQuery({ name: 'includeFlagged', description: 'Include NFTs that are flagged or not', required: false })
   @ApiQuery({ name: 'withSupply', description: 'Return supply where type = SemiFungibleESDT', required: false })
   @ApiQuery({ name: 'source', description: 'Data source of request', required: false })
-  @ApiOkResponse({ type: [NftAccount] })
+  @ApiQuery({ name: 'withScamInfo', description: 'Include scam info in the response', required: false, type: Boolean })
+  @ApiQuery({ name: 'computeScamInfo', description: 'Compute scam info in the response', required: false, type: Boolean })
+  @ApiQuery({ name: 'excludeMetaESDT', description: 'Exclude NFTs of type "MetaESDT" in the response', required: false, type: Boolean })
+  @ApiQuery({ name: 'fields', description: 'List of fields to filter by', required: false })
   async getAccountNfts(
     @Param('address', ParseAddressPipe) address: string,
     @Query('from', new DefaultValuePipe(0), ParseIntPipe) from: number,
@@ -415,16 +481,23 @@ export class AccountController {
     @Query('name') name?: string,
     @Query('tags', ParseArrayPipe) tags?: string[],
     @Query('creator', ParseAddressPipe) creator?: string,
-    @Query('hasUris', new ParseOptionalBoolPipe) hasUris?: boolean,
-    @Query('includeFlagged', new ParseOptionalBoolPipe) includeFlagged?: boolean,
-    @Query('withSupply', new ParseOptionalBoolPipe) withSupply?: boolean,
-    @Query('source', new ParseOptionalEnumPipe(EsdtDataSource)) source?: EsdtDataSource,
+    @Query('hasUris', new ParseBoolPipe) hasUris?: boolean,
+    @Query('includeFlagged', new ParseBoolPipe) includeFlagged?: boolean,
+    @Query('withSupply', new ParseBoolPipe) withSupply?: boolean,
+    @Query('withScamInfo', new ParseBoolPipe) withScamInfo?: boolean,
+    @Query('computeScamInfo', new ParseBoolPipe) computeScamInfo?: boolean,
+    @Query('source', new ParseEnumPipe(EsdtDataSource)) source?: EsdtDataSource,
+    @Query('excludeMetaESDT', new ParseBoolPipe) excludeMetaESDT?: boolean,
+    @Query('fields', ParseArrayPipe) fields?: string[],
   ): Promise<NftAccount[]> {
+    const options = NftQueryOptions.enforceScamInfoFlag(size, new NftQueryOptions({ withSupply, withScamInfo, computeScamInfo }));
+
     return await this.nftService.getNftsForAddress(
       address,
       new QueryPagination({ from, size }),
-      new NftFilter({ search, identifiers, type, collection, name, collections, tags, creator, hasUris, includeFlagged }),
-      new NftQueryOptions({ withSupply }),
+      new NftFilter({ search, identifiers, type, collection, name, collections, tags, creator, hasUris, includeFlagged, excludeMetaESDT }),
+      fields,
+      options,
       source
     );
   }
@@ -441,6 +514,7 @@ export class AccountController {
   @ApiQuery({ name: 'creator', description: 'Return all NFTs associated with a given creator', required: false })
   @ApiQuery({ name: 'hasUris', description: 'Return all NFTs that have one or more uris', required: false })
   @ApiQuery({ name: 'includeFlagged', description: 'Include NFTs that are flagged or not', required: false })
+  @ApiQuery({ name: 'excludeMetaESDT', description: 'Exclude NFTs of type "MetaESDT" in the response', required: false, type: Boolean })
   @ApiOkResponse({ type: Number })
   async getNftCount(
     @Param('address', ParseAddressPipe) address: string,
@@ -452,10 +526,11 @@ export class AccountController {
     @Query('name') name?: string,
     @Query('tags', ParseArrayPipe) tags?: string[],
     @Query('creator', ParseAddressPipe) creator?: string,
-    @Query('hasUris', new ParseOptionalBoolPipe) hasUris?: boolean,
-    @Query('includeFlagged', new ParseOptionalBoolPipe) includeFlagged?: boolean,
+    @Query('hasUris', new ParseBoolPipe) hasUris?: boolean,
+    @Query('includeFlagged', new ParseBoolPipe) includeFlagged?: boolean,
+    @Query('excludeMetaESDT', new ParseBoolPipe) excludeMetaESDT?: boolean,
   ): Promise<number> {
-    return await this.nftService.getNftCountForAddress(address, new NftFilter({ search, identifiers, type, collection, collections, name, tags, creator, hasUris, includeFlagged }));
+    return await this.nftService.getNftCountForAddress(address, new NftFilter({ search, identifiers, type, collection, collections, name, tags, creator, hasUris, includeFlagged, excludeMetaESDT }));
   }
 
   @Get("/accounts/:address/nfts/c")
@@ -470,20 +545,27 @@ export class AccountController {
     @Query('name') name?: string,
     @Query('tags', ParseArrayPipe) tags?: string[],
     @Query('creator', ParseAddressPipe) creator?: string,
-    @Query('hasUris', new ParseOptionalBoolPipe) hasUris?: boolean,
-    @Query('includeFlagged', new ParseOptionalBoolPipe) includeFlagged?: boolean,
+    @Query('hasUris', new ParseBoolPipe) hasUris?: boolean,
+    @Query('includeFlagged', new ParseBoolPipe) includeFlagged?: boolean,
+    @Query('excludeMetaESDT', new ParseBoolPipe) excludeMetaESDT?: boolean,
   ): Promise<number> {
-    return await this.nftService.getNftCountForAddress(address, new NftFilter({ search, identifiers, type, collection, collections, name, tags, creator, hasUris, includeFlagged }));
+    return await this.nftService.getNftCountForAddress(address, new NftFilter({ search, identifiers, type, collection, collections, name, tags, creator, hasUris, includeFlagged, excludeMetaESDT }));
   }
 
   @Get("/accounts/:address/nfts/:nft")
   @ApiOperation({ summary: 'Account NFT/SFT token details', description: 'Returns details about a specific fungible token for a given address' })
+  @ApiQuery({ name: 'fields', description: 'List of fields to filter by', required: false })
+  @ApiQuery({ name: 'extract', description: 'Extract a specific field', required: false })
   @ApiOkResponse({ type: NftAccount })
   async getAccountNft(
     @Param('address', ParseAddressPipe) address: string,
-    @Param('nft') nft: string,
+    @Param('nft', ParseNftPipe) nft: string,
+    @Query('fields', ParseArrayPipe) fields?: string[],
+    @Query('extract') extract?: string,
   ): Promise<NftAccount> {
-    const result = await this.nftService.getNftForAddress(address, nft);
+    const actualFields = extract ? [extract] : fields;
+
+    const result = await this.nftService.getNftForAddress(address, nft, actualFields);
     if (!result) {
       throw new HttpException('Token for given account not found', HttpStatus.NOT_FOUND);
     }
@@ -496,6 +578,13 @@ export class AccountController {
   @ApiOkResponse({ type: ProviderStake })
   async getAccountStake(@Param('address', ParseAddressPipe) address: string): Promise<ProviderStake> {
     return await this.stakeService.getStakeForAddress(address);
+  }
+
+  @Get("/accounts/:address/delegation")
+  @ApiOperation({ summary: 'Account delegations with staking providers', description: 'Summarizes all delegation positions with staking providers, together with unDelegation positions' })
+  @ApiOkResponse({ type: AccountDelegation, isArray: true })
+  async getDelegationForAddress(@Param('address', ParseAddressPipe) address: string): Promise<AccountDelegation[]> {
+    return await this.delegationService.getDelegationForAddress(address);
   }
 
   @Get("/accounts/:address/delegation-legacy")
@@ -521,97 +610,57 @@ export class AccountController {
 
   @Get("/accounts/:address/transactions")
   @ApiOperation({ summary: 'Account transaction list', description: 'Returns details of all transactions where the account is sender or receiver' })
+  @ApplyComplexity({ target: TransactionDetailed })
   @ApiOkResponse({ type: [Transaction] })
   @ApiQuery({ name: 'from', description: 'Number of items to skip for the result set', required: false })
   @ApiQuery({ name: 'size', description: 'Number of items to retrieve', required: false })
   @ApiQuery({ name: 'sender', description: 'Address of the transaction sender', required: false })
-  @ApiQuery({ name: 'receiver', description: 'Address of the transaction receiver', required: false })
+  @ApiQuery({ name: 'receiver', description: 'Search by multiple receiver addresses, comma-separated', required: false })
   @ApiQuery({ name: 'token', description: 'Identifier of the token', required: false })
   @ApiQuery({ name: 'senderShard', description: 'Id of the shard the sender address belongs to', required: false })
   @ApiQuery({ name: 'receiverShard', description: 'Id of the shard the receiver address belongs to', required: false })
   @ApiQuery({ name: 'miniBlockHash', description: 'Filter by miniblock hash', required: false })
   @ApiQuery({ name: 'hashes', description: 'Filter by a comma-separated list of transaction hashes', required: false })
   @ApiQuery({ name: 'status', description: 'Status of the transaction (success / pending / invalid / fail)', required: false, enum: TransactionStatus })
-  @ApiQuery({ name: 'search', description: 'Search in data object', required: false })
+  @ApiQuery({ name: 'function', description: 'Filter transactions by function name', required: false })
   @ApiQuery({ name: 'order', description: 'Sort order (asc/desc)', required: false, enum: SortOrder })
   @ApiQuery({ name: 'before', description: 'Before timestamp', required: false })
   @ApiQuery({ name: 'after', description: 'After timestamp', required: false })
-  @ApiQuery({ name: 'withScResults', description: 'Return scResults for transactions', required: false })
-  @ApiQuery({ name: 'withOperations', description: 'Return operations for transactions', required: false })
-  @ApiQuery({ name: 'withLogs', description: 'Return logs for transactions', required: false })
+  @ApiQuery({ name: 'withScResults', description: 'Return scResults for transactions. When "withScresults" parameter is applied, complexity estimation is 200', required: false })
+  @ApiQuery({ name: 'withOperations', description: 'Return operations for transactions. When "withOperations" parameter is applied, complexity estimation is 200', required: false })
+  @ApiQuery({ name: 'withLogs', description: 'Return logs for transactions. When "withLogs" parameter is applied, complexity estimation is 200', required: false })
+  @ApiQuery({ name: 'withScamInfo', description: 'Returns scam information', required: false, type: Boolean })
+  @ApiQuery({ name: 'withUsername', description: 'Integrates username in assets for all addresses present in the transactions', required: false, type: Boolean })
+  @ApiQuery({ name: 'computeScamInfo', required: false, type: Boolean })
+  @ApiQuery({ name: 'senderOrReceiver', description: 'One address that current address interacted with', required: false })
   async getAccountTransactions(
     @Param('address', ParseAddressPipe) address: string,
     @Query('from', new DefaultValuePipe(0), ParseIntPipe) from: number,
     @Query('size', new DefaultValuePipe(25), ParseIntPipe) size: number,
     @Query('sender', ParseAddressPipe) sender?: string,
-    @Query('receiver', ParseAddressPipe) receiver?: string,
-    @Query('token') token?: string,
-    @Query('senderShard', ParseOptionalIntPipe) senderShard?: number,
-    @Query('receiverShard', ParseOptionalIntPipe) receiverShard?: number,
+    @Query('receiver', ParseAddressArrayPipe) receiver?: string[],
+    @Query('token', ParseTokenPipe) token?: string,
+    @Query('senderShard', ParseIntPipe) senderShard?: number,
+    @Query('receiverShard', ParseIntPipe) receiverShard?: number,
     @Query('miniBlockHash', ParseBlockHashPipe) miniBlockHash?: string,
     @Query('hashes', ParseArrayPipe) hashes?: string[],
-    @Query('status', new ParseOptionalEnumPipe(TransactionStatus)) status?: TransactionStatus,
-    @Query('search') search?: string,
-    @Query('before', ParseOptionalIntPipe) before?: number,
-    @Query('after', ParseOptionalIntPipe) after?: number,
-    @Query('order', new ParseOptionalEnumPipe(SortOrder)) order?: SortOrder,
-    @Query('withScResults', new ParseOptionalBoolPipe) withScResults?: boolean,
-    @Query('withOperations', new ParseOptionalBoolPipe) withOperations?: boolean,
-    @Query('withLogs', new ParseOptionalBoolPipe) withLogs?: boolean,
+    @Query('status', new ParseEnumPipe(TransactionStatus)) status?: TransactionStatus,
+    @Query('function') scFunction?: string,
+    @Query('before', ParseIntPipe) before?: number,
+    @Query('after', ParseIntPipe) after?: number,
+    @Query('order', new ParseEnumPipe(SortOrder)) order?: SortOrder,
+    @Query('withScResults', new ParseBoolPipe) withScResults?: boolean,
+    @Query('withOperations', new ParseBoolPipe) withOperations?: boolean,
+    @Query('withLogs', new ParseBoolPipe) withLogs?: boolean,
+    @Query('withScamInfo', new ParseBoolPipe) withScamInfo?: boolean,
+    @Query('withUsername', new ParseBoolPipe) withUsername?: boolean,
+    @Query('senderOrReceiver', ParseAddressPipe) senderOrReceiver?: string,
   ) {
-    if ((withScResults === true || withOperations === true || withLogs) && size > 50) {
-      throw new BadRequestException(`Maximum size of 50 is allowed when activating flags 'withScResults', 'withOperations' or 'withLogs'`);
-    }
+    const options = TransactionQueryOptions.applyDefaultOptions(size, { withScResults, withOperations, withLogs, withScamInfo, withUsername });
 
     return await this.transactionService.getTransactions(new TransactionFilter({
       sender,
-      receiver,
-      token,
-      senderShard,
-      receiverShard,
-      miniBlockHash,
-      hashes,
-      status,
-      search,
-      before,
-      after,
-      order,
-    }), new QueryPagination({ from, size }), new TransactionQueryOptions({ withScResults, withOperations, withLogs }), address);
-  }
-
-  @Get("/accounts/:address/transactions/count")
-  @ApiOperation({ summary: 'Account transactions count', description: 'Returns total number of transactions for a given address where the account is sender or receiver, as well as total transactions count that have a certain status' })
-  @ApiOkResponse({ type: Number })
-  @ApiQuery({ name: 'sender', description: 'Address of the transaction sender', required: false })
-  @ApiQuery({ name: 'receiver', description: 'Address of the transaction receiver', required: false })
-  @ApiQuery({ name: 'token', description: 'Identifier of the token', required: false })
-  @ApiQuery({ name: 'senderShard', description: 'Id of the shard the sender address belongs to', required: false })
-  @ApiQuery({ name: 'receiverShard', description: 'Id of the shard the receiver address belongs to', required: false })
-  @ApiQuery({ name: 'miniBlockHash', description: 'Filter by miniblock hash', required: false })
-  @ApiQuery({ name: 'hashes', description: 'Filter by a comma-separated list of transaction hashes', required: false })
-  @ApiQuery({ name: 'status', description: 'Status of the transaction (success / pending / invalid / fail)', required: false, enum: TransactionStatus })
-  @ApiQuery({ name: 'search', description: 'Search in data object', required: false })
-  @ApiQuery({ name: 'function', description: 'Filter transactions by function name', required: false })
-  @ApiQuery({ name: 'before', description: 'Before timestamp', required: false })
-  @ApiQuery({ name: 'after', description: 'After timestamp', required: false })
-  async getAccountTransactionsCount(
-    @Param('address', ParseAddressPipe) address: string,
-    @Query('sender', ParseAddressPipe) sender?: string,
-    @Query('receiver', ParseAddressPipe) receiver?: string,
-    @Query('token') token?: string,
-    @Query('senderShard', ParseOptionalIntPipe) senderShard?: number,
-    @Query('receiverShard', ParseOptionalIntPipe) receiverShard?: number,
-    @Query('miniBlockHash', ParseBlockHashPipe) miniBlockHash?: string,
-    @Query('hashes', ParseArrayPipe) hashes?: string[],
-    @Query('status', new ParseOptionalEnumPipe(TransactionStatus)) status?: TransactionStatus,
-    @Query('search') search?: string,
-    @Query('function') scFunction?: string,
-    @Query('before', ParseOptionalIntPipe) before?: number,
-    @Query('after', ParseOptionalIntPipe) after?: number,
-  ): Promise<number> {
-    return await this.transactionService.getTransactionCount(new TransactionFilter({
-      sender,
-      receiver,
+      receivers: receiver,
       token,
       function: scFunction,
       senderShard,
@@ -619,7 +668,52 @@ export class AccountController {
       miniBlockHash,
       hashes,
       status,
-      search,
+      before,
+      after,
+      order,
+      senderOrReceiver,
+    }), new QueryPagination({ from, size }), options, address);
+  }
+
+  @Get("/accounts/:address/transactions/count")
+  @ApiOperation({ summary: 'Account transactions count', description: 'Returns total number of transactions for a given address where the account is sender or receiver, as well as total transactions count that have a certain status' })
+  @ApiOkResponse({ type: Number })
+  @ApiQuery({ name: 'sender', description: 'Address of the transaction sender', required: false })
+  @ApiQuery({ name: 'receiver', description: 'Search by multiple receiver addresses, comma-separated', required: false })
+  @ApiQuery({ name: 'token', description: 'Identifier of the token', required: false })
+  @ApiQuery({ name: 'senderShard', description: 'Id of the shard the sender address belongs to', required: false })
+  @ApiQuery({ name: 'receiverShard', description: 'Id of the shard the receiver address belongs to', required: false })
+  @ApiQuery({ name: 'miniBlockHash', description: 'Filter by miniblock hash', required: false })
+  @ApiQuery({ name: 'hashes', description: 'Filter by a comma-separated list of transaction hashes', required: false })
+  @ApiQuery({ name: 'status', description: 'Status of the transaction (success / pending / invalid / fail)', required: false, enum: TransactionStatus })
+  @ApiQuery({ name: 'function', description: 'Filter transactions by function name', required: false })
+  @ApiQuery({ name: 'before', description: 'Before timestamp', required: false })
+  @ApiQuery({ name: 'after', description: 'After timestamp', required: false })
+  async getAccountTransactionsCount(
+    @Param('address', ParseAddressPipe) address: string,
+    @Query('sender', ParseAddressPipe) sender?: string,
+    @Query('receiver', ParseAddressArrayPipe) receiver?: string[],
+    @Query('token') token?: string,
+    @Query('senderShard', ParseIntPipe) senderShard?: number,
+    @Query('receiverShard', ParseIntPipe) receiverShard?: number,
+    @Query('miniBlockHash', ParseBlockHashPipe) miniBlockHash?: string,
+    @Query('hashes', ParseArrayPipe) hashes?: string[],
+    @Query('status', new ParseEnumPipe(TransactionStatus)) status?: TransactionStatus,
+    @Query('function') scFunction?: string,
+    @Query('before', ParseIntPipe) before?: number,
+    @Query('after', ParseIntPipe) after?: number,
+  ): Promise<number> {
+
+    return await this.transactionService.getTransactionCount(new TransactionFilter({
+      sender,
+      receivers: receiver,
+      token,
+      function: scFunction,
+      senderShard,
+      receiverShard,
+      miniBlockHash,
+      hashes,
+      status,
       before,
       after,
     }), address);
@@ -631,84 +725,94 @@ export class AccountController {
   @ApiQuery({ name: 'from', description: 'Number of items to skip for the result set', required: false })
   @ApiQuery({ name: 'size', description: 'Number of items to retrieve', required: false })
   @ApiQuery({ name: 'sender', description: 'Address of the transfer sender', required: false })
-  @ApiQuery({ name: 'receiver', description: 'Address of the transfer receiver', required: false })
+  @ApiQuery({ name: 'receiver', description: 'Search by multiple receiver addresses, comma-separated', required: false })
   @ApiQuery({ name: 'token', description: 'Identifier of the token', required: false })
   @ApiQuery({ name: 'senderShard', description: 'Id of the shard the sender address belongs to', required: false })
   @ApiQuery({ name: 'receiverShard', description: 'Id of the shard the receiver address belongs to', required: false })
   @ApiQuery({ name: 'miniBlockHash', description: 'Filter by miniblock hash', required: false })
   @ApiQuery({ name: 'hashes', description: 'Filter by a comma-separated list of transfer hashes', required: false })
   @ApiQuery({ name: 'status', description: 'Status of the transaction (success / pending / invalid / fail)', required: false, enum: TransactionStatus })
-  @ApiQuery({ name: 'search', description: 'Search in data object', required: false })
+  @ApiQuery({ name: 'function', description: 'Filter transactions by function name', required: false })
   @ApiQuery({ name: 'order', description: 'Sort order (asc/desc)', required: false, enum: SortOrder })
   @ApiQuery({ name: 'before', description: 'Before timestamp', required: false })
   @ApiQuery({ name: 'after', description: 'After timestamp', required: false })
+  @ApiQuery({ name: 'withScamInfo', description: 'Returns scam information', required: false, type: Boolean })
+  @ApiQuery({ name: 'withUsername', description: 'Integrates username in assets for all addresses present in the transactions', required: false, type: Boolean })
+  @ApiQuery({ name: 'senderOrReceiver', description: 'One address that current address interacted with', required: false })
   async getAccountTransfers(
     @Param('address', ParseAddressPipe) address: string,
     @Query('from', new DefaultValuePipe(0), ParseIntPipe) from: number,
     @Query('size', new DefaultValuePipe(25), ParseIntPipe) size: number,
-    @Query('sender', ParseAddressPipe) sender?: string,
-    @Query('receiver', ParseAddressPipe) receiver?: string,
+    @Query('sender', ParseAddressArrayPipe) sender?: string[],
+    @Query('receiver', ParseAddressArrayPipe) receiver?: string[],
     @Query('token') token?: string,
-    @Query('senderShard', ParseOptionalIntPipe) senderShard?: number,
-    @Query('receiverShard', ParseOptionalIntPipe) receiverShard?: number,
+    @Query('senderShard', ParseIntPipe) senderShard?: number,
+    @Query('receiverShard', ParseIntPipe) receiverShard?: number,
     @Query('miniBlockHash', ParseBlockHashPipe) miniBlockHash?: string,
     @Query('hashes', ParseArrayPipe) hashes?: string[],
-    @Query('status', new ParseOptionalEnumPipe(TransactionStatus)) status?: TransactionStatus,
-    @Query('search') search?: string,
-    @Query('before', ParseOptionalIntPipe) before?: number,
-    @Query('after', ParseOptionalIntPipe) after?: number,
-    @Query('order', new ParseOptionalEnumPipe(SortOrder)) order?: SortOrder,
+    @Query('status', new ParseEnumPipe(TransactionStatus)) status?: TransactionStatus,
+    @Query('function') scFunction?: string,
+    @Query('before', ParseIntPipe) before?: number,
+    @Query('after', ParseIntPipe) after?: number,
+    @Query('order', new ParseEnumPipe(SortOrder)) order?: SortOrder,
+    @Query('withScamInfo', new ParseBoolPipe) withScamInfo?: boolean,
+    @Query('withUsername', new ParseBoolPipe) withUsername?: boolean,
+    @Query('senderOrReceiver', ParseAddressPipe) senderOrReceiver?: string,
   ): Promise<Transaction[]> {
     if (!this.apiConfigService.getIsIndexerV3FlagActive()) {
       throw new HttpException('Endpoint not live yet', HttpStatus.NOT_IMPLEMENTED);
     }
 
+    const options = TransactionQueryOptions.applyDefaultOptions(size, { withScamInfo, withUsername });
+
     return await this.transferService.getTransfers(new TransactionFilter({
       address,
-      sender,
-      receiver,
+      senders: sender,
+      receivers: receiver,
       token,
+      function: scFunction,
       senderShard,
       receiverShard,
       miniBlockHash,
       hashes,
       status,
-      search,
       before,
       after,
       order,
-    }), new QueryPagination({ from, size }));
+      senderOrReceiver,
+    }),
+      new QueryPagination({ from, size }),
+      options,
+    );
   }
 
   @Get("/accounts/:address/transfers/count")
   @ApiOperation({ summary: 'Account transfer count', description: 'Return total count of tranfers triggerred by a user account (type = Transaction), as well as transfers triggerred by smart contracts (type = SmartContractResult)' })
   @ApiOkResponse({ type: Number })
   @ApiQuery({ name: 'sender', description: 'Address of the transfer sender', required: false })
-  @ApiQuery({ name: 'receiver', description: 'Address of the transfer receiver', required: false })
+  @ApiQuery({ name: 'receiver', description: 'Search by multiple receiver addresses, comma-separated', required: false })
   @ApiQuery({ name: 'token', description: 'Identifier of the token', required: false })
   @ApiQuery({ name: 'senderShard', description: 'Id of the shard the sender address belongs to', required: false })
   @ApiQuery({ name: 'receiverShard', description: 'Id of the shard the receiver address belongs to', required: false })
   @ApiQuery({ name: 'miniBlockHash', description: 'Filter by miniblock hash', required: false })
   @ApiQuery({ name: 'hashes', description: 'Filter by a comma-separated list of transfer hashes', required: false })
   @ApiQuery({ name: 'status', description: 'Status of the transaction (success / pending / invalid / fail)', required: false, enum: TransactionStatus })
-  @ApiQuery({ name: 'search', description: 'Search in data object', required: false })
   @ApiQuery({ name: 'function', description: 'Filter transfers by function name', required: false })
   @ApiQuery({ name: 'before', description: 'Before timestamp', required: false })
   @ApiQuery({ name: 'after', description: 'After timestamp', required: false })
   async getAccountTransfersCount(
     @Param('address', ParseAddressPipe) address: string,
     @Query('sender', ParseAddressPipe) sender?: string,
-    @Query('receiver', ParseAddressPipe) receiver?: string,
+    @Query('receiver', ParseAddressArrayPipe) receiver?: string[],
     @Query('token') token?: string,
-    @Query('senderShard', ParseOptionalIntPipe) senderShard?: number,
-    @Query('receiverShard', ParseOptionalIntPipe) receiverShard?: number,
+    @Query('senderShard', ParseIntPipe) senderShard?: number,
+    @Query('receiverShard', ParseIntPipe) receiverShard?: number,
     @Query('miniBlockHash', ParseBlockHashPipe) miniBlockHash?: string,
     @Query('hashes', ParseArrayPipe) hashes?: string[],
-    @Query('status', new ParseOptionalEnumPipe(TransactionStatus)) status?: TransactionStatus,
-    @Query('search') search?: string,
+    @Query('status', new ParseEnumPipe(TransactionStatus)) status?: TransactionStatus,
     @Query('function') scFunction?: string,
-    @Query('before', ParseOptionalIntPipe) before?: number,
-    @Query('after', ParseOptionalIntPipe) after?: number,
+    @Query('before', ParseIntPipe) before?: number,
+    @Query('after', ParseIntPipe) after?: number,
   ): Promise<number> {
     if (!this.apiConfigService.getIsIndexerV3FlagActive()) {
       throw new HttpException('Endpoint not live yet', HttpStatus.NOT_IMPLEMENTED);
@@ -717,7 +821,7 @@ export class AccountController {
     return await this.transferService.getTransfersCount(new TransactionFilter({
       address,
       sender,
-      receiver,
+      receivers: receiver,
       token,
       function: scFunction,
       senderShard,
@@ -725,7 +829,6 @@ export class AccountController {
       miniBlockHash,
       hashes,
       status,
-      search,
       before,
       after,
     }));
@@ -736,17 +839,16 @@ export class AccountController {
   async getAccountTransfersCountAlternative(
     @Param('address', ParseAddressPipe) address: string,
     @Query('sender', ParseAddressPipe) sender?: string,
-    @Query('receiver', ParseAddressPipe) receiver?: string,
+    @Query('receiver', ParseAddressArrayPipe) receiver?: string[],
     @Query('token') token?: string,
-    @Query('senderShard', ParseOptionalIntPipe) senderShard?: number,
-    @Query('receiverShard', ParseOptionalIntPipe) receiverShard?: number,
+    @Query('senderShard', ParseIntPipe) senderShard?: number,
+    @Query('receiverShard', ParseIntPipe) receiverShard?: number,
     @Query('miniBlockHash', ParseBlockHashPipe) miniBlockHash?: string,
     @Query('hashes', ParseArrayPipe) hashes?: string[],
-    @Query('status', new ParseOptionalEnumPipe(TransactionStatus)) status?: TransactionStatus,
-    @Query('search') search?: string,
+    @Query('status', new ParseEnumPipe(TransactionStatus)) status?: TransactionStatus,
     @Query('function') scFunction?: string,
-    @Query('before', ParseOptionalIntPipe) before?: number,
-    @Query('after', ParseOptionalIntPipe) after?: number,
+    @Query('before', ParseIntPipe) before?: number,
+    @Query('after', ParseIntPipe) after?: number,
   ): Promise<number> {
     if (!this.apiConfigService.getIsIndexerV3FlagActive()) {
       throw new HttpException('Endpoint not live yet', HttpStatus.NOT_IMPLEMENTED);
@@ -755,7 +857,7 @@ export class AccountController {
     return await this.transferService.getTransfersCount(new TransactionFilter({
       address,
       sender,
-      receiver,
+      receivers: receiver,
       token,
       function: scFunction,
       senderShard,
@@ -763,7 +865,6 @@ export class AccountController {
       miniBlockHash,
       hashes,
       status,
-      search,
       before,
       after,
     }));
@@ -793,6 +894,23 @@ export class AccountController {
   @ApiExcludeEndpoint()
   getAccountContractsCountAlternative(@Param('address', ParseAddressPipe) address: string): Promise<number> {
     return this.accountService.getAccountContractsCount(address);
+  }
+
+  @Get("/accounts/:address/upgrades")
+  @ApiOperation({ summary: 'Account upgrades details', description: 'Returns all upgrades details for a specific contract address' })
+  @ApiOkResponse({ type: ContractUpgrades })
+  getContractUpgrades(
+    @Param('address', ParseAddressPipe) address: string,
+    @Query('from', new DefaultValuePipe(0), ParseIntPipe) from: number,
+    @Query('size', new DefaultValuePipe(25), ParseIntPipe) size: number,
+  ): Promise<ContractUpgrades[] | null> {
+    const upgrades = this.accountService.getContractUpgrades(new QueryPagination({ from, size }), address);
+
+    if (!upgrades) {
+      throw new NotFoundException();
+    }
+
+    return upgrades;
   }
 
   @Get("/accounts/:address/results")
@@ -889,7 +1007,7 @@ export class AccountController {
   @ApiOkResponse({ type: [AccountEsdtHistory] })
   async getAccountTokenHistory(
     @Param('address', ParseAddressPipe) address: string,
-    @Param('tokenIdentifier') tokenIdentifier: string,
+    @Param('tokenIdentifier', ParseTokenOrNftPipe) tokenIdentifier: string,
     @Query('from', new DefaultValuePipe(0), ParseIntPipe) from: number,
     @Query('size', new DefaultValuePipe(25), ParseIntPipe) size: number,
   ): Promise<AccountEsdtHistory[]> {

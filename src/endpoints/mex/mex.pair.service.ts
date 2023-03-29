@@ -1,5 +1,5 @@
-import { Constants, CachingService } from "@elrondnetwork/erdnest";
-import { BadRequestException, Injectable, Logger } from "@nestjs/common";
+import { Constants, CachingService } from "@multiversx/sdk-nestjs";
+import { BadRequestException, Injectable } from "@nestjs/common";
 import { gql } from "graphql-request";
 import { CacheInfo } from "src/utils/cache.info";
 import { GraphQlService } from "src/common/graphql/graphql.service";
@@ -7,18 +7,19 @@ import { MexPair } from "./entities/mex.pair";
 import { MexPairState } from "./entities/mex.pair.state";
 import { MexPairType } from "./entities/mex.pair.type";
 import { MexSettingsService } from "./mex.settings.service";
+import { OriginLogger } from "@multiversx/sdk-nestjs";
+import { ApiConfigService } from "src/common/api-config/api.config.service";
 
 @Injectable()
 export class MexPairService {
-  private readonly logger: Logger;
+  private readonly logger = new OriginLogger(MexPairService.name);
 
   constructor(
     private readonly cachingService: CachingService,
     private readonly mexSettingService: MexSettingsService,
     private readonly graphQlService: GraphQlService,
-  ) {
-    this.logger = new Logger(MexPairService.name);
-  }
+    private readonly apiConfigService: ApiConfigService,
+  ) { }
 
   async refreshMexPairs(): Promise<void> {
     const pairs = await this.getAllMexPairsRaw();
@@ -38,12 +39,22 @@ export class MexPairService {
   }
 
   async getAllMexPairs(): Promise<MexPair[]> {
+    if (!this.apiConfigService.isExchangeEnabled()) {
+      return [];
+    }
+
     return await this.cachingService.getOrSetCache(
       CacheInfo.MexPairs.key,
       async () => await this.getAllMexPairsRaw(),
       CacheInfo.MexPairs.ttl,
       Constants.oneSecond() * 30
     );
+  }
+
+  async getMexPairsCount(): Promise<number> {
+    const mexPairs = await this.getAllMexPairs();
+
+    return mexPairs.length;
   }
 
   async getAllMexPairsRaw(): Promise<MexPair[]> {
@@ -117,7 +128,7 @@ export class MexPairService {
     const secondTokenSymbol = pair.secondToken.identifier.split('-')[0];
     const state = this.getPairState(pair.state);
     const type = this.getPairType(pair.type);
-    if (!type || [MexPairType.jungle, MexPairType.unlisted].includes(type)) {
+    if (!type || [MexPairType.unlisted].includes(type)) {
       return undefined;
     }
 
@@ -188,6 +199,8 @@ export class MexPairService {
       case 'Experimental':
         return MexPairType.experimental;
       case 'Jungle':
+      case 'Jungle-Experimental':
+      case 'Jungle-Community':
         return MexPairType.jungle;
       case 'Unlisted':
         return MexPairType.unlisted;

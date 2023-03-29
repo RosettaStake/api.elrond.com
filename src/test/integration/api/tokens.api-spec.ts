@@ -1,4 +1,4 @@
-import { CleanupInterceptor, FieldsInterceptor } from '@elrondnetwork/erdnest';
+import { CleanupInterceptor, FieldsInterceptor } from '@multiversx/sdk-nestjs';
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { PublicAppModule } from 'src/public.app.module';
@@ -24,7 +24,7 @@ describe("API Testing", () => {
     const checker = new ApiChecker('tokens', app.getHttpServer());
     await checker.checkStatus();
     await checker.checkPagination();
-    await checker.checkDetails();
+    await checker.checkTokensDetails();
     await checker.checkAlternativeCount(['identifier']);
   });
 });
